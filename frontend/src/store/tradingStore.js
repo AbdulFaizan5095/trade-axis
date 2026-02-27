@@ -1,13 +1,14 @@
 // frontend/src/store/tradingStore.js
 import { create } from 'zustand';
 import api from '../services/api';
-import { toast } from 'react-hot-toast';
 
 const useTradingStore = create((set, get) => ({
   // State
   openTrades: [],
   pendingOrders: [],
   tradeHistory: [],
+  deals: [], // ✅ NEW
+  dealsSummary: null, // ✅ NEW
   loading: false,
   error: null,
 
@@ -72,13 +73,71 @@ const useTradingStore = create((set, get) => ({
     }
   },
 
+  // ✅ NEW: Fetch deals (Profit, Deposit, Withdrawal, Commission, Balance)
+  fetchDeals: async (accountId, period = 'month') => {
+    if (!accountId) return;
+
+    set({ loading: true, error: null });
+    try {
+      const response = await api.get(`/transactions/deals?accountId=${accountId}&period=${period}`);
+      if (response.data.success) {
+        set({ 
+          deals: response.data.data.deals || [], 
+          dealsSummary: response.data.data.summary || null,
+          loading: false 
+        });
+      } else {
+        set({ error: response.data.message, loading: false });
+      }
+    } catch (error) {
+      console.error('Fetch deals error:', error);
+      set({
+        error: error.response?.data?.message || 'Failed to fetch deals',
+        loading: false,
+        deals: [],
+        dealsSummary: null
+      });
+    }
+  },
+
+  // ✅ NEW: Update trade P&L in real-time (called by socket)
+  updateTradePnL: (tradeId, currentPrice, profit) => {
+    set((state) => ({
+      openTrades: state.openTrades.map((t) =>
+        t.id === tradeId
+          ? { ...t, current_price: currentPrice, profit: parseFloat(profit) }
+          : t
+      ),
+    }));
+  },
+
+  // ✅ NEW: Batch update trades P&L
+  updateTradesPnLBatch: (updates) => {
+    set((state) => {
+      const updatesMap = new Map(updates.map(u => [u.tradeId, u]));
+      return {
+        openTrades: state.openTrades.map((t) => {
+          const update = updatesMap.get(t.id);
+          if (update) {
+            return { 
+              ...t, 
+              current_price: update.currentPrice, 
+              profit: parseFloat(update.profit) 
+            };
+          }
+          return t;
+        }),
+      };
+    });
+  },
+
   // Place order (market or pending)
   placeOrder: async (orderData) => {
     const {
       accountId,
       symbol,
-      type, // 'buy' | 'sell'
-      orderType = 'market', // 'market' | 'buy_limit' | 'sell_limit' | 'buy_stop' | 'sell_stop' | 'buy_stop_limit' | 'sell_stop_limit'
+      type,
+      orderType = 'market',
       quantity,
       price = 0,
       stopLimitPrice = 0,
@@ -86,12 +145,11 @@ const useTradingStore = create((set, get) => ({
       takeProfit = 0,
       slippage = 3,
       comment = '',
-      expiration = 'gtc', // 'gtc' | 'today' | 'specified'
+      expiration = 'gtc',
       expirationTime = null,
       magicNumber = 0,
     } = orderData;
 
-    // Validation
     if (!accountId || !symbol || !type || !quantity) {
       return {
         success: false,
@@ -129,7 +187,6 @@ const useTradingStore = create((set, get) => ({
       const response = await api.post('/trading/order', payload);
 
       if (response.data.success) {
-        // Refresh positions or pending orders based on order type
         if (orderType === 'market') {
           await get().fetchOpenTrades(accountId);
         } else {
@@ -178,13 +235,11 @@ const useTradingStore = create((set, get) => ({
       });
 
       if (response.data.success) {
-        // Remove from open trades
         set((state) => ({
           openTrades: state.openTrades.filter((t) => t.id !== tradeId),
           loading: false,
         }));
 
-        // Refresh data
         await get().fetchOpenTrades(accountId);
         await get().fetchTradeHistory(accountId);
 
@@ -234,7 +289,6 @@ const useTradingStore = create((set, get) => ({
       const response = await api.put(`/trading/modify/${tradeId}`, payload);
 
       if (response.data.success) {
-        // Update in state
         set((state) => ({
           openTrades: state.openTrades.map((t) =>
             t.id === tradeId
@@ -344,7 +398,6 @@ const useTradingStore = create((set, get) => ({
       );
 
       if (response.data.success) {
-        // Update in state
         set((state) => ({
           pendingOrders: state.pendingOrders.map((o) =>
             o.id === orderId ? { ...o, ...payload } : o
@@ -393,7 +446,6 @@ const useTradingStore = create((set, get) => ({
       });
 
       if (response.data.success) {
-        // Remove from pending orders
         set((state) => ({
           pendingOrders: state.pendingOrders.filter((o) => o.id !== orderId),
           loading: false,
@@ -441,7 +493,6 @@ const useTradingStore = create((set, get) => ({
       };
     }
 
-    // Filter trades based on type
     let tradesToClose = openTrades;
     
     if (filterType === 'profitable') {
@@ -503,7 +554,7 @@ const useTradingStore = create((set, get) => ({
     }
   },
 
-  // Close all pending orders
+  // Cancel all pending orders
   cancelAllOrders: async (accountId) => {
     if (!accountId) {
       return {
@@ -593,6 +644,8 @@ const useTradingStore = create((set, get) => ({
       openTrades: [],
       pendingOrders: [],
       tradeHistory: [],
+      deals: [],
+      dealsSummary: null,
       loading: false,
       error: null,
     }),

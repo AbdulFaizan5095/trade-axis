@@ -1,3 +1,4 @@
+// backend/src/websocket/socketHandler.js
 const jwt = require('jsonwebtoken');
 const { supabase } = require('../config/supabase');
 const marketDataService = require('../services/marketDataService');
@@ -25,7 +26,6 @@ class SocketHandler {
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         
-        // Get user from database
         const { data: user, error } = await supabase
           .from('users')
           .select('id, email, first_name, last_name, role')
@@ -45,10 +45,8 @@ class SocketHandler {
       }
     });
 
-    // Connection handler
     this.io.on('connection', (socket) => this.handleConnection(socket));
 
-    // Start background updates
     this.startPriceUpdates();
     this.startPnLUpdates();
   }
@@ -56,20 +54,16 @@ class SocketHandler {
   handleConnection(socket) {
     console.log(`✅ WebSocket connected: ${socket.user.email}`);
 
-    // Store connected user
     this.connectedUsers.set(socket.userId, socket);
 
-    // Join user's private room
     socket.join(`user:${socket.userId}`);
 
-    // Send welcome message
     socket.emit('connected', {
       message: 'Connected to Trade Axis',
       user: socket.user,
       timestamp: new Date().toISOString()
     });
 
-    // Event handlers
     socket.on('subscribe:symbols', (symbols) => this.handleSubscribeSymbols(socket, symbols));
     socket.on('unsubscribe:symbols', (symbols) => this.handleUnsubscribeSymbols(socket, symbols));
     socket.on('subscribe:account', (accountId) => this.handleSubscribeAccount(socket, accountId));
@@ -78,13 +72,11 @@ class SocketHandler {
     
     socket.on('disconnect', () => this.handleDisconnect(socket));
 
-    // Send initial data
     this.sendInitialData(socket);
   }
 
   async sendInitialData(socket) {
     try {
-      // Get user's accounts
       const { data: accounts } = await supabase
         .from('accounts')
         .select('*')
@@ -93,7 +85,6 @@ class SocketHandler {
 
       socket.emit('accounts:update', accounts);
 
-      // Get open trades
       const { data: trades } = await supabase
         .from('trades')
         .select('*')
@@ -171,7 +162,6 @@ class SocketHandler {
   startPriceUpdates() {
     this.priceUpdateInterval = setInterval(async () => {
       try {
-        // Get all active symbols
         const { data: symbols } = await supabase
           .from('symbols')
           .select('*')
@@ -179,11 +169,9 @@ class SocketHandler {
 
         if (!symbols) return;
 
-        // Update prices and broadcast
         for (const symbol of symbols) {
           const quote = marketDataService.simulatePriceMovement(symbol);
 
-          // Update database
           await supabase
             .from('symbols')
             .update({
@@ -196,7 +184,6 @@ class SocketHandler {
             })
             .eq('id', symbol.id);
 
-          // Broadcast to subscribers
           this.io.to(`symbol:${symbol.symbol}`).emit('price:update', {
             symbol: symbol.symbol,
             bid: quote.bid,
@@ -211,22 +198,22 @@ class SocketHandler {
       } catch (error) {
         console.error('Price update error:', error.message);
       }
-    }, 1000); // Update every second
+    }, 1000);
 
     console.log('📈 Price updates started (1s interval)');
   }
 
-  // Update P&L for open trades every 2 seconds
+  // ✅ FIXED: Update P&L for open trades every 2 seconds
   startPnLUpdates() {
     this.pnlUpdateInterval = setInterval(async () => {
       try {
-        // Get all users with open trades
-        const { data: openTrades } = await supabase
+        // Get all open trades with account info
+        const { data: openTrades, error: tradesError } = await supabase
           .from('trades')
-          .select('*, accounts!inner(user_id)')
+          .select('*, accounts!inner(user_id, balance, margin)')
           .eq('status', 'open');
 
-        if (!openTrades || openTrades.length === 0) return;
+        if (tradesError || !openTrades || openTrades.length === 0) return;
 
         // Group by user
         const tradesByUser = {};
@@ -238,89 +225,135 @@ class SocketHandler {
           tradesByUser[userId].push(trade);
         });
 
-        // Update each user's trades
+        // Process each user's trades
         for (const [userId, trades] of Object.entries(tradesByUser)) {
-          let totalPnL = 0;
+          const tradeUpdates = [];
 
           for (const trade of trades) {
-            // Get current price
-            const { data: symbolData } = await supabase
+            // Get current price for this symbol
+            const { data: symbolData, error: symError } = await supabase
               .from('symbols')
               .select('bid, ask, lot_size')
               .eq('symbol', trade.symbol)
               .single();
 
-            if (!symbolData) continue;
+            if (symError || !symbolData) continue;
 
-            const currentPrice = trade.trade_type === 'buy' ? symbolData.bid : symbolData.ask;
-            
-            // Calculate P&L
+            // ✅ Calculate current price based on trade type
+            const currentPrice = trade.trade_type === 'buy' 
+              ? parseFloat(symbolData.bid || symbolData.ask) 
+              : parseFloat(symbolData.ask || symbolData.bid);
+
+            // ✅ Calculate P&L correctly
             const direction = trade.trade_type === 'buy' ? 1 : -1;
-            const priceDiff = (currentPrice - parseFloat(trade.open_price)) * direction;
-            const pnl = priceDiff * trade.quantity * (symbolData.lot_size || 1);
-            const netPnl = pnl - parseFloat(trade.brokerage || 0);
+            const openPrice = parseFloat(trade.open_price || 0);
+            const quantity = parseFloat(trade.quantity || 0);
+            const lotSize = parseFloat(symbolData.lot_size || 1);
+            const brokerage = parseFloat(trade.brokerage || 0);
 
-            totalPnL += netPnl;
+            const priceDiff = (currentPrice - openPrice) * direction;
+            const grossPnL = priceDiff * quantity * lotSize;
+            const netPnL = grossPnL - brokerage;
 
-            // Update trade in database
+            // ✅ Update trade in database
             await supabase
               .from('trades')
               .update({
                 current_price: currentPrice,
-                profit: netPnl
+                profit: netPnL
               })
               .eq('id', trade.id);
 
-            // Send update to user
-            this.io.to(`user:${userId}`).emit('trade:pnl', {
+            tradeUpdates.push({
               tradeId: trade.id,
               symbol: trade.symbol,
-              currentPrice,
-              profit: netPnl.toFixed(2),
+              tradeType: trade.trade_type,
+              openPrice: openPrice,
+              currentPrice: currentPrice,
+              quantity: quantity,
+              profit: netPnL,
               timestamp: Date.now()
             });
           }
 
-          // Update account equity
+          // ✅ Send batch update to user
+          if (tradeUpdates.length > 0) {
+            this.io.to(`user:${userId}`).emit('trades:pnl:batch', {
+              trades: tradeUpdates,
+              timestamp: Date.now()
+            });
+
+            // Also send individual updates for backwards compatibility
+            tradeUpdates.forEach(update => {
+              this.io.to(`user:${userId}`).emit('trade:pnl', {
+                tradeId: update.tradeId,
+                symbol: update.symbol,
+                currentPrice: update.currentPrice,
+                profit: update.profit.toFixed(2),
+                timestamp: Date.now()
+              });
+            });
+          }
+
+          // ✅ Update account equity
           const accountIds = [...new Set(trades.map(t => t.account_id))];
           
           for (const accountId of accountIds) {
-            const { data: account } = await supabase
+            const { data: account, error: accError } = await supabase
               .from('accounts')
               .select('*')
               .eq('id', accountId)
               .single();
 
-            if (account) {
-              const accountTrades = trades.filter(t => t.account_id === accountId);
-              const accountPnL = accountTrades.reduce((sum, t) => {
-                const direction = t.trade_type === 'buy' ? 1 : -1;
-                const { data: sym } = supabase.from('symbols').select('bid, ask').eq('symbol', t.symbol).single();
-                return sum + parseFloat(t.profit || 0);
-              }, 0);
+            if (accError || !account) continue;
 
-              const newEquity = parseFloat(account.balance) + accountPnL;
-              const newFreeMargin = newEquity - parseFloat(account.margin);
+            // Calculate total P&L for this account
+            const accountTrades = trades.filter(t => t.account_id === accountId);
+            let totalPnL = 0;
 
-              await supabase
-                .from('accounts')
-                .update({
-                  profit: accountPnL,
-                  equity: newEquity,
-                  free_margin: newFreeMargin
-                })
-                .eq('id', accountId);
-
-              // Broadcast account update
-              this.io.to(`account:${accountId}`).emit('account:update', {
-                accountId,
-                balance: account.balance,
-                equity: newEquity.toFixed(2),
-                profit: accountPnL.toFixed(2),
-                freeMargin: newFreeMargin.toFixed(2),
-                timestamp: Date.now()
-              });
+            for (const t of accountTrades) {
+              // Use the already calculated profit from tradeUpdates
+              const update = tradeUpdates.find(u => u.tradeId === t.id);
+              if (update) {
+                totalPnL += update.profit;
+              }
             }
+
+            const balance = parseFloat(account.balance || 0);
+            const margin = parseFloat(account.margin || 0);
+            const newEquity = balance + totalPnL;
+            const newFreeMargin = newEquity - margin;
+
+            await supabase
+              .from('accounts')
+              .update({
+                profit: totalPnL,
+                equity: newEquity,
+                free_margin: newFreeMargin
+              })
+              .eq('id', accountId);
+
+            // ✅ Broadcast account update
+            this.io.to(`account:${accountId}`).emit('account:update', {
+              accountId,
+              balance: balance,
+              equity: newEquity,
+              profit: totalPnL,
+              freeMargin: newFreeMargin,
+              margin: margin,
+              timestamp: Date.now()
+            });
+
+            // Also send to user room
+            this.io.to(`user:${userId}`).emit('account:update', {
+              accountId,
+              balance: balance,
+              equity: newEquity,
+              profit: totalPnL,
+              freeMargin: newFreeMargin,
+              margin: margin,
+              timestamp: Date.now()
+            });
           }
         }
 
@@ -332,16 +365,14 @@ class SocketHandler {
     console.log('💹 P&L updates started (2s interval)');
   }
 
-  // Broadcast trade notification
   broadcastTradeNotification(userId, type, trade) {
     this.io.to(`user:${userId}`).emit('trade:notification', {
-      type, // 'opened', 'closed', 'modified'
+      type,
       trade,
       timestamp: Date.now()
     });
   }
 
-  // Broadcast transaction notification
   broadcastTransactionNotification(userId, transaction) {
     this.io.to(`user:${userId}`).emit('transaction:notification', {
       transaction,
@@ -349,7 +380,6 @@ class SocketHandler {
     });
   }
 
-  // Stop all intervals
   stop() {
     if (this.priceUpdateInterval) {
       clearInterval(this.priceUpdateInterval);

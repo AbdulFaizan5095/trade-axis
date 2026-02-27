@@ -9,11 +9,18 @@ const randomPassword = (len = 12) => {
   return out;
 };
 
+// Leverage options (1:1 to 1:200)
+const LEVERAGE_OPTIONS = [1, 2, 5, 10, 20, 25, 50, 100, 200];
+const DEFAULT_LEVERAGE = 5;
+const DEFAULT_MAX_SAVED_ACCOUNTS = 5;
+const DEFAULT_BROKERAGE_RATE = 0.0003; // 0.03%
+
 // ---------------- USERS ----------------
 const listUsers = async (req, res) => {
   try {
     const { q = '', limit = 200 } = req.query;
 
+    // Don't include columns that might not exist yet
     let query = supabase
       .from('users')
       .select('id, email, first_name, last_name, phone, role, is_active, is_verified, created_at, last_login')
@@ -25,7 +32,47 @@ const listUsers = async (req, res) => {
     const { data, error } = await query;
     if (error) throw error;
 
-    return res.json({ success: true, data: data || [] });
+    // Fetch accounts with leverage for each user
+    const userIds = (data || []).map(u => u.id);
+    
+    let accountsData = [];
+    if (userIds.length > 0) {
+      const { data: accounts } = await supabase
+        .from('accounts')
+        .select('id, user_id, account_number, account_type, is_demo, leverage, balance')
+        .in('user_id', userIds);
+      accountsData = accounts || [];
+    }
+
+    // Try to fetch additional columns separately
+    let extraDataMap = {};
+    try {
+      const { data: usersWithExtra } = await supabase
+        .from('users')
+        .select('id, max_saved_accounts, brokerage_rate')
+        .in('id', userIds);
+      
+      if (usersWithExtra) {
+        usersWithExtra.forEach(u => {
+          extraDataMap[u.id] = {
+            max_saved_accounts: u.max_saved_accounts,
+            brokerage_rate: u.brokerage_rate
+          };
+        });
+      }
+    } catch (e) {
+      console.log('Optional columns not found, using defaults');
+    }
+
+    // Attach accounts to users
+    const usersWithAccounts = (data || []).map(user => ({
+      ...user,
+      max_saved_accounts: extraDataMap[user.id]?.max_saved_accounts || DEFAULT_MAX_SAVED_ACCOUNTS,
+      brokerage_rate: extraDataMap[user.id]?.brokerage_rate || DEFAULT_BROKERAGE_RATE,
+      accounts: accountsData.filter(a => a.user_id === user.id)
+    }));
+
+    return res.json({ success: true, data: usersWithAccounts });
   } catch (e) {
     console.error('admin.listUsers:', e);
     return res.status(500).json({ success: false, message: 'Failed to list users' });
@@ -41,7 +88,9 @@ const createUser = async (req, res) => {
       phone,
       role = 'user',
       password,
-      leverage = 5,
+      leverage = DEFAULT_LEVERAGE,
+      maxSavedAccounts = DEFAULT_MAX_SAVED_ACCOUNTS,
+      brokerageRate = DEFAULT_BROKERAGE_RATE,
       demoBalance = 100000,
       createDemo = true,
       createLive = true,
@@ -50,6 +99,10 @@ const createUser = async (req, res) => {
     if (!email || !firstName || !lastName) {
       return res.status(400).json({ success: false, message: 'email, firstName, lastName are required' });
     }
+
+    // Validate leverage
+    const validLeverage = LEVERAGE_OPTIONS.includes(Number(leverage)) ? Number(leverage) : DEFAULT_LEVERAGE;
+    const validBrokerageRate = Math.min(Math.max(0, Number(brokerageRate) || DEFAULT_BROKERAGE_RATE), 1);
 
     const normalizedEmail = String(email).toLowerCase().trim();
 
@@ -66,22 +119,38 @@ const createUser = async (req, res) => {
     const tempPassword = password?.trim() ? password.trim() : randomPassword(12);
     const hashedPassword = await hashPassword(tempPassword);
 
+    // Create user without optional columns first
+    const userInsertData = {
+      email: normalizedEmail,
+      password_hash: hashedPassword,
+      first_name: firstName,
+      last_name: lastName,
+      phone: phone || null,
+      role: role === 'admin' ? 'admin' : 'user',
+      is_verified: false,
+      is_active: true,
+    };
+
     const { data: user, error: userError } = await supabase
       .from('users')
-      .insert([{
-        email: normalizedEmail,
-        password_hash: hashedPassword,
-        first_name: firstName,
-        last_name: lastName,
-        phone: phone || null,
-        role: role === 'admin' ? 'admin' : 'user',
-        is_verified: false,
-        is_active: true,
-      }])
+      .insert([userInsertData])
       .select('id, email, first_name, last_name, phone, role, is_active, created_at')
       .single();
 
     if (userError) throw userError;
+
+    // Try to update optional columns
+    try {
+      await supabase
+        .from('users')
+        .update({ 
+          max_saved_accounts: Number(maxSavedAccounts) || DEFAULT_MAX_SAVED_ACCOUNTS,
+          brokerage_rate: validBrokerageRate
+        })
+        .eq('id', user.id);
+    } catch (e) {
+      console.log('Could not set optional columns, they may not exist in database');
+    }
 
     const createdAccounts = [];
 
@@ -96,7 +165,7 @@ const createUser = async (req, res) => {
           balance: Number(demoBalance) || 100000,
           equity: Number(demoBalance) || 100000,
           free_margin: Number(demoBalance) || 100000,
-          leverage: Number(leverage) || 5,
+          leverage: validLeverage,
           currency: 'INR',
           is_demo: true,
           is_active: true,
@@ -119,7 +188,7 @@ const createUser = async (req, res) => {
           balance: 0,
           equity: 0,
           free_margin: 0,
-          leverage: Number(leverage) || 5,
+          leverage: validLeverage,
           currency: 'INR',
           is_demo: false,
           is_active: true,
@@ -134,12 +203,163 @@ const createUser = async (req, res) => {
     return res.status(201).json({
       success: true,
       message: 'User created',
-      data: { user, accounts: createdAccounts, tempPassword },
+      data: { 
+        user: { 
+          ...user, 
+          max_saved_accounts: DEFAULT_MAX_SAVED_ACCOUNTS,
+          brokerage_rate: validBrokerageRate 
+        }, 
+        accounts: createdAccounts, 
+        tempPassword 
+      },
     });
   } catch (e) {
     console.error('admin.createUser:', e);
     return res.status(500).json({ success: false, message: 'Failed to create user', error: e.message });
   }
+};
+
+// Update user leverage
+const updateUserLeverage = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { leverage, accountId } = req.body;
+
+    // Validate leverage
+    if (!LEVERAGE_OPTIONS.includes(Number(leverage))) {
+      return res.status(400).json({ 
+        success: false, 
+        message: `Invalid leverage. Allowed values: ${LEVERAGE_OPTIONS.map(l => '1:' + l).join(', ')}` 
+      });
+    }
+
+    // If accountId provided, update specific account
+    if (accountId) {
+      const { data, error } = await supabase
+        .from('accounts')
+        .update({ leverage: Number(leverage), updated_at: new Date().toISOString() })
+        .eq('id', accountId)
+        .eq('user_id', id)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      return res.json({
+        success: true,
+        message: `Leverage updated to 1:${leverage}`,
+        data
+      });
+    }
+
+    // Otherwise update ALL accounts for this user
+    const { data, error } = await supabase
+      .from('accounts')
+      .update({ leverage: Number(leverage), updated_at: new Date().toISOString() })
+      .eq('user_id', id)
+      .select();
+
+    if (error) throw error;
+
+    return res.json({
+      success: true,
+      message: `Leverage updated to 1:${leverage} for all accounts`,
+      data
+    });
+  } catch (e) {
+    console.error('admin.updateUserLeverage:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update leverage' });
+  }
+};
+
+// ✅ Update brokerage rate for user
+const updateBrokerageRate = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { brokerageRate } = req.body;
+
+    const rate = Math.min(Math.max(0, Number(brokerageRate) || DEFAULT_BROKERAGE_RATE), 1);
+
+    // First try to update
+    const { data, error } = await supabase
+      .from('users')
+      .update({ brokerage_rate: rate })
+      .eq('id', id)
+      .select('id, email')
+      .single();
+
+    if (error) {
+      // Column might not exist
+      if (error.code === '42703') {
+        console.log('brokerage_rate column not found, returning default');
+        return res.json({
+          success: true,
+          message: `Brokerage rate set to ${(rate * 100).toFixed(2)}% (pending database update)`,
+          data: { id, brokerage_rate: rate }
+        });
+      }
+      throw error;
+    }
+
+    return res.json({
+      success: true,
+      message: `Brokerage rate updated to ${(rate * 100).toFixed(2)}%`,
+      data: { ...data, brokerage_rate: rate }
+    });
+  } catch (e) {
+    console.error('admin.updateBrokerageRate:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update brokerage rate' });
+  }
+};
+
+// Update max saved accounts for user
+const updateMaxSavedAccounts = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { maxSavedAccounts } = req.body;
+
+    const max = Math.min(Math.max(1, Number(maxSavedAccounts) || 5), 10);
+
+    const { data, error } = await supabase
+      .from('users')
+      .update({ max_saved_accounts: max })
+      .eq('id', id)
+      .select('id, email')
+      .single();
+
+    if (error) {
+      // Column might not exist
+      if (error.code === '42703') {
+        console.log('max_saved_accounts column not found, returning default');
+        return res.json({
+          success: true,
+          message: `Max saved accounts set to ${max} (pending database update)`,
+          data: { id, max_saved_accounts: max }
+        });
+      }
+      throw error;
+    }
+
+    return res.json({
+      success: true,
+      message: `Max saved accounts updated to ${max}`,
+      data: { ...data, max_saved_accounts: max }
+    });
+  } catch (e) {
+    console.error('admin.updateMaxSavedAccounts:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update max saved accounts' });
+  }
+};
+
+// Get leverage options (for frontend dropdown)
+const getLeverageOptions = (req, res) => {
+  return res.json({
+    success: true,
+    data: {
+      options: LEVERAGE_OPTIONS,
+      default: DEFAULT_LEVERAGE
+    }
+  });
 };
 
 const setUserActive = async (req, res) => {
@@ -195,14 +415,12 @@ const resetPassword = async (req, res) => {
   }
 };
 
-// ---------------- WITHDRAWALS (ADMIN WALLET OPS) ----------------
+// ---------------- WITHDRAWALS ----------------
 
-// GET /api/admin/withdrawals?status=pending
 const listWithdrawals = async (req, res) => {
   try {
     const { status = 'pending', limit = 200 } = req.query;
 
-    // support both naming conventions
     const types = ['withdraw', 'withdrawal'];
 
     let q = supabase
@@ -224,8 +442,6 @@ const listWithdrawals = async (req, res) => {
   }
 };
 
-// POST /api/admin/withdrawals/:id/approve
-// MVP: mark completed + (optionally) deduct funds now
 const approveWithdrawal = async (req, res) => {
   try {
     const adminId = req.user.id;
@@ -246,8 +462,6 @@ const approveWithdrawal = async (req, res) => {
       return res.status(400).json({ success: false, message: `Cannot approve status: ${txn.status}` });
     }
 
-    // OPTIONAL: Deduct now (safe if your withdrawal request did NOT already deduct)
-    // If your paymentService already reserves funds on request, tell me and we'll switch logic.
     const amount = Number(txn.amount || 0);
     if (amount <= 0) return res.status(400).json({ success: false, message: 'Invalid amount' });
 
@@ -261,13 +475,11 @@ const approveWithdrawal = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Account not found for withdrawal' });
     }
 
-    // Check funds
     const freeMargin = Number(account.free_margin || 0);
     if (amount > freeMargin) {
       return res.status(400).json({ success: false, message: `Insufficient funds. Free margin ₹${freeMargin.toFixed(2)}` });
     }
 
-    // Update transaction -> completed
     const now = new Date().toISOString();
 
     const { data: updatedTxn, error: upErr } = await supabase
@@ -284,7 +496,6 @@ const approveWithdrawal = async (req, res) => {
 
     if (upErr) throw upErr;
 
-    // Deduct from account
     const newBalance = Math.max(0, Number(account.balance || 0) - amount);
     const newFreeMargin = Math.max(0, Number(account.free_margin || 0) - amount);
     const newEquity = Math.max(0, Number(account.equity || 0) - amount);
@@ -312,7 +523,6 @@ const approveWithdrawal = async (req, res) => {
   }
 };
 
-// POST /api/admin/withdrawals/:id/reject
 const rejectWithdrawal = async (req, res) => {
   try {
     const adminId = req.user.id;
@@ -360,11 +570,16 @@ const rejectWithdrawal = async (req, res) => {
   }
 };
 
+// ✅ EXPORT ALL FUNCTIONS
 module.exports = {
   listUsers,
   createUser,
   setUserActive,
   resetPassword,
+  updateUserLeverage,
+  updateBrokerageRate, // ✅ Make sure this is exported
+  updateMaxSavedAccounts,
+  getLeverageOptions,
   listWithdrawals,
   approveWithdrawal,
   rejectWithdrawal,

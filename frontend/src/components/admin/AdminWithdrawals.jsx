@@ -1,147 +1,207 @@
+// frontend/src/components/admin/AdminWithdrawals.jsx
 import { useEffect, useState } from 'react';
 import api from '../../services/api';
 import { toast } from 'react-hot-toast';
+import { RefreshCw, CheckCircle, XCircle, Clock, DollarSign } from 'lucide-react';
 
 export default function AdminWithdrawals() {
-  const [status, setStatus] = useState('pending'); // pending | processing | completed | rejected | all
   const [loading, setLoading] = useState(false);
-  const [items, setItems] = useState([]);
-  const [noteById, setNoteById] = useState({});
+  const [withdrawals, setWithdrawals] = useState([]);
+  const [statusFilter, setStatusFilter] = useState('pending');
 
-  const load = async () => {
+  const loadWithdrawals = async () => {
     setLoading(true);
     try {
-      const res = await api.get(`/admin/withdrawals?status=${status}&limit=200`);
-      setItems(res.data?.data || []);
+      const res = await api.get(`/admin/withdrawals?status=${statusFilter}`);
+      console.log('Withdrawals:', res.data);
+      
+      if (res.data?.success) {
+        setWithdrawals(res.data.data || []);
+      }
     } catch (e) {
       console.error(e);
-      toast.error(e.response?.data?.message || 'Failed to load withdrawals');
+      toast.error('Failed to load withdrawals');
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
+    loadWithdrawals();
+  }, [statusFilter]);
 
-  const approve = async (id) => {
+  const approveWithdrawal = async (id) => {
+    if (!window.confirm('Approve this withdrawal?')) return;
+    
     try {
-      await api.post(`/admin/withdrawals/${id}/approve`, { note: noteById[id] || '' });
-      toast.success('Approved');
-      load();
+      await api.post(`/admin/withdrawals/${id}/approve`, { note: 'Approved by admin' });
+      toast.success('Withdrawal approved');
+      loadWithdrawals();
     } catch (e) {
       console.error(e);
-      toast.error(e.response?.data?.message || 'Approve failed');
+      toast.error(e.response?.data?.message || 'Approval failed');
     }
   };
 
-  const reject = async (id) => {
+  const rejectWithdrawal = async (id) => {
+    const reason = window.prompt('Rejection reason (optional):');
+    
     try {
-      await api.post(`/admin/withdrawals/${id}/reject`, { note: noteById[id] || '' });
-      toast.success('Rejected');
-      load();
+      await api.post(`/admin/withdrawals/${id}/reject`, { note: reason || 'Rejected by admin' });
+      toast.success('Withdrawal rejected');
+      loadWithdrawals();
     } catch (e) {
       console.error(e);
-      toast.error(e.response?.data?.message || 'Reject failed');
+      toast.error(e.response?.data?.message || 'Rejection failed');
     }
+  };
+
+  const formatDate = (date) => {
+    if (!date) return '-';
+    return new Date(date).toLocaleString('en-IN');
+  };
+
+  const formatAmount = (amount) => {
+    return `₹${Number(amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const getStatusBadge = (status) => {
+    const styles = {
+      pending: { bg: '#f5c54220', color: '#f5c542' },
+      processing: { bg: '#2962ff20', color: '#2962ff' },
+      completed: { bg: '#26a69a20', color: '#26a69a' },
+      rejected: { bg: '#ef535020', color: '#ef5350' },
+      failed: { bg: '#ef535020', color: '#ef5350' },
+    };
+    const style = styles[status] || styles.pending;
+    
+    return (
+      <span 
+        className="px-2 py-1 rounded text-xs font-medium"
+        style={{ background: style.bg, color: style.color }}
+      >
+        {status.toUpperCase()}
+      </span>
+    );
   };
 
   return (
     <div className="h-full flex flex-col" style={{ background: '#1e222d' }}>
       <div className="p-4 border-b" style={{ borderColor: '#363a45' }}>
-        <div className="text-lg font-bold" style={{ color: '#d1d4dc' }}>
-          Admin • Withdrawals
-        </div>
-
-        <div className="flex gap-2 mt-3 overflow-x-auto">
-          {['pending', 'processing', 'completed', 'rejected', 'all'].map((s) => (
-            <button
-              key={s}
-              onClick={() => setStatus(s)}
-              className="px-3 py-1.5 rounded text-xs font-medium"
-              style={{
-                background: status === s ? '#2962ff' : '#2a2e39',
-                color: status === s ? '#fff' : '#787b86',
-              }}
-            >
-              {s.toUpperCase()}
-            </button>
-          ))}
-
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-lg font-bold" style={{ color: '#d1d4dc' }}>
+              Admin • Withdrawals
+            </div>
+            <div className="text-xs mt-1" style={{ color: '#787b86' }}>
+              Approve or reject withdrawal requests
+            </div>
+          </div>
           <button
-            onClick={load}
-            className="ml-auto px-3 py-1.5 rounded text-xs"
-            style={{ background: '#2a2e39', color: '#d1d4dc', border: '1px solid #363a45' }}
+            onClick={loadWithdrawals}
+            className="p-2 rounded-lg flex items-center gap-2 text-sm"
+            style={{ background: '#2a2e39', color: '#d1d4dc' }}
           >
+            <RefreshCw size={16} />
             Refresh
           </button>
         </div>
       </div>
 
+      {/* Status Filter */}
+      <div className="p-3 border-b" style={{ borderColor: '#363a45' }}>
+        <div className="flex gap-2">
+          {['all', 'pending', 'processing', 'completed', 'rejected'].map((status) => (
+            <button
+              key={status}
+              onClick={() => setStatusFilter(status)}
+              className="px-3 py-2 rounded-lg text-sm font-medium"
+              style={{
+                background: statusFilter === status ? '#2962ff' : '#2a2e39',
+                color: statusFilter === status ? '#fff' : '#787b86',
+              }}
+            >
+              {status.charAt(0).toUpperCase() + status.slice(1)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Withdrawals List */}
       <div className="flex-1 overflow-y-auto p-4">
         {loading ? (
-          <div style={{ color: '#787b86' }}>Loading...</div>
-        ) : items.length === 0 ? (
-          <div style={{ color: '#787b86' }}>No withdrawals</div>
+          <div className="text-center py-8" style={{ color: '#787b86' }}>
+            Loading withdrawals...
+          </div>
+        ) : withdrawals.length === 0 ? (
+          <div className="text-center py-8" style={{ color: '#787b86' }}>
+            <DollarSign size={48} className="mx-auto mb-3 opacity-30" />
+            <div>No {statusFilter === 'all' ? '' : statusFilter} withdrawals found</div>
+          </div>
         ) : (
-          items.map((w) => (
-            <div
-              key={w.id}
-              className="p-3 rounded-lg mb-2"
-              style={{ background: '#2a2e39', border: '1px solid #363a45' }}
-            >
-              <div className="flex items-start justify-between">
-                <div>
-                  <div style={{ color: '#d1d4dc', fontWeight: 700 }}>
-                    Amount: ₹{Number(w.amount || 0).toFixed(2)}
+          <div className="space-y-3">
+            {withdrawals.map((w) => (
+              <div
+                key={w.id}
+                className="rounded-lg p-4"
+                style={{ background: '#2a2e39', border: '1px solid #363a45' }}
+              >
+                <div className="flex items-start justify-between mb-3">
+                  <div>
+                    <div className="flex items-center gap-3 mb-1">
+                      {getStatusBadge(w.status)}
+                      <span className="text-sm font-bold" style={{ color: '#d1d4dc' }}>
+                        {formatAmount(w.amount)}
+                      </span>
+                    </div>
+                    <div className="text-xs" style={{ color: '#787b86' }}>
+                      Request ID: {w.reference || w.id.slice(0, 8)}
+                    </div>
                   </div>
-                  <div className="text-xs" style={{ color: '#787b86' }}>
-                    Status: {String(w.status || '').toUpperCase()}
-                  </div>
-                  <div className="text-xs" style={{ color: '#787b86' }}>
-                    User ID: {w.user_id}
-                  </div>
-                  <div className="text-xs" style={{ color: '#787b86' }}>
-                    Account ID: {w.account_id}
-                  </div>
-                  <div className="text-xs" style={{ color: '#787b86' }}>
-                    Created: {w.created_at ? new Date(w.created_at).toLocaleString() : '-'}
-                  </div>
+
+                  {(w.status === 'pending' || w.status === 'processing') && (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => approveWithdrawal(w.id)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1"
+                        style={{ background: '#26a69a20', color: '#26a69a' }}
+                      >
+                        <CheckCircle size={14} />
+                        Approve
+                      </button>
+                      <button
+                        onClick={() => rejectWithdrawal(w.id)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1"
+                        style={{ background: '#ef535020', color: '#ef5350' }}
+                      >
+                        <XCircle size={14} />
+                        Reject
+                      </button>
+                    </div>
+                  )}
                 </div>
 
-                {(w.status === 'pending' || w.status === 'processing') && (
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => approve(w.id)}
-                      className="px-3 py-1.5 rounded text-xs font-semibold"
-                      style={{ background: '#26a69a', color: '#fff' }}
-                    >
-                      Approve
-                    </button>
-                    <button
-                      onClick={() => reject(w.id)}
-                      className="px-3 py-1.5 rounded text-xs font-semibold"
-                      style={{ background: '#ef5350', color: '#fff' }}
-                    >
-                      Reject
-                    </button>
+                <div className="grid grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <div style={{ color: '#787b86' }}>User</div>
+                    <div style={{ color: '#d1d4dc' }}>{w.user_email || 'User #' + w.user_id?.slice(0, 8)}</div>
                   </div>
-                )}
+                  <div>
+                    <div style={{ color: '#787b86' }}>Account</div>
+                    <div style={{ color: '#d1d4dc' }}>{w.account_number || 'Account #' + w.account_id?.slice(0, 8)}</div>
+                  </div>
+                  <div>
+                    <div style={{ color: '#787b86' }}>Method</div>
+                    <div style={{ color: '#d1d4dc' }}>{w.payment_method || 'Bank Transfer'}</div>
+                  </div>
+                  <div>
+                    <div style={{ color: '#787b86' }}>Requested</div>
+                    <div style={{ color: '#d1d4dc' }}>{formatDate(w.created_at)}</div>
+                  </div>
+                </div>
               </div>
-
-              <div className="mt-2">
-                <input
-                  value={noteById[w.id] || ''}
-                  onChange={(e) => setNoteById((p) => ({ ...p, [w.id]: e.target.value }))}
-                  placeholder="Admin note (optional)"
-                  className="w-full px-3 py-2 rounded text-sm"
-                  style={{ background: '#1e222d', border: '1px solid #363a45', color: '#d1d4dc' }}
-                />
-              </div>
-            </div>
-          ))
+            ))}
+          </div>
         )}
       </div>
     </div>

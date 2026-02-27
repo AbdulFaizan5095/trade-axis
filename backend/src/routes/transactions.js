@@ -1,3 +1,4 @@
+// backend/src/routes/transactions.js
 const express = require('express');
 const router = express.Router();
 const { body } = require('express-validator');
@@ -12,6 +13,7 @@ const {
   withdraw,
   getTransactions,
   getTransaction,
+  getDeals, // ✅ NEW
 } = require('../controllers/transactionController');
 
 // PUBLIC
@@ -19,6 +21,9 @@ router.get('/razorpay-key', getRazorpayKey);
 
 // PROTECTED
 router.use(protect);
+
+// ✅ NEW: Deals endpoint (must be before /:id)
+router.get('/deals', getDeals);
 
 router.post(
   '/deposit/create',

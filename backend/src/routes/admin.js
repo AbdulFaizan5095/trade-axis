@@ -14,7 +14,13 @@ router.post('/users', adminController.createUser);
 router.patch('/users/:id/active', adminController.setUserActive);
 router.post('/users/:id/reset-password', adminController.resetPassword);
 
-// ✅ Withdrawals (Admin wallet ops)
+// Trading settings
+router.get('/leverage-options', adminController.getLeverageOptions);
+router.patch('/users/:id/leverage', adminController.updateUserLeverage);
+router.patch('/users/:id/brokerage', adminController.updateBrokerageRate);
+router.patch('/users/:id/max-saved-accounts', adminController.updateMaxSavedAccounts);
+
+// Withdrawals
 router.get('/withdrawals', adminController.listWithdrawals);
 router.post('/withdrawals/:id/approve', adminController.approveWithdrawal);
 router.post('/withdrawals/:id/reject', adminController.rejectWithdrawal);
