@@ -1,6 +1,6 @@
 // backend/src/controllers/authController.js
 const { supabase } = require('../config/supabase');
-const { hashPassword, comparePassword, generateToken, generateAccountNumber } = require('../utils/auth');
+const { hashPassword, comparePassword, generateToken, generateAccountNumber, generateLoginId } = require('../utils/auth');
 
 // @desc    Register new user (Admin only)
 // @route   POST /api/auth/register
@@ -8,6 +8,7 @@ const register = async (req, res) => {
   try {
     const { email, password, firstName, lastName, phone } = req.body;
 
+    // Check if email already exists
     const { data: existingUser } = await supabase
       .from('users')
       .select('id')
@@ -21,12 +22,16 @@ const register = async (req, res) => {
       });
     }
 
+    // ✅ Generate unique Login ID (TA1000, TA1001, etc.)
+    const loginId = await generateLoginId();
+
     const hashedPassword = await hashPassword(password);
 
     const { data: user, error: userError } = await supabase
       .from('users')
       .insert([
         {
+          login_id: loginId, // ✅ NEW
           email: email.toLowerCase(),
           password_hash: hashedPassword,
           first_name: firstName,
@@ -35,10 +40,11 @@ const register = async (req, res) => {
           is_verified: false,
           is_active: true,
           role: 'user',
-          max_saved_accounts: 5 // ✅ Default
+          max_saved_accounts: -1, // ✅ -1 = unlimited
+          closing_mode: false, // ✅ NEW
         }
       ])
-      .select('id, email, first_name, last_name, phone, role, is_verified, max_saved_accounts')
+      .select('id, login_id, email, first_name, last_name, phone, role, is_verified, max_saved_accounts, closing_mode')
       .single();
 
     if (userError) {
@@ -95,7 +101,7 @@ const register = async (req, res) => {
       console.error('Live account creation error:', liveError);
     }
 
-    const token = generateToken(user.id, user.email);
+    const token = generateToken(user.id, user.login_id);
 
     res.status(201).json({
       success: true,
@@ -103,16 +109,19 @@ const register = async (req, res) => {
       data: {
         user: {
           id: user.id,
+          loginId: user.login_id, // ✅ NEW
           email: user.email,
           firstName: user.first_name,
           lastName: user.last_name,
           phone: user.phone,
           role: user.role,
           isVerified: user.is_verified,
-          maxSavedAccounts: user.max_saved_accounts
+          maxSavedAccounts: user.max_saved_accounts,
+          closingMode: user.closing_mode, // ✅ NEW
         },
-        accounts: [demoAccount, liveAccount],
-        token
+        accounts: [demoAccount, liveAccount].filter(Boolean),
+        token,
+        tempLoginId: loginId, // ✅ Return login ID for admin to share
       }
     });
 
@@ -130,18 +139,47 @@ const register = async (req, res) => {
 // @route   POST /api/auth/login
 const login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { loginId, password } = req.body; // ✅ Changed from email to loginId
 
-    const { data: user, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('email', email.toLowerCase())
-      .single();
+    if (!loginId || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Login ID and password are required'
+      });
+    }
 
-    if (error || !user) {
+    // ✅ Find user by login_id (TA1000 format) OR email (for backward compatibility)
+    let user;
+    const normalizedInput = loginId.trim();
+    
+    // Check if it looks like a login ID (starts with TA)
+    const isLoginId = /^TA\d+$/i.test(normalizedInput);
+    
+    if (isLoginId) {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('login_id', normalizedInput.toUpperCase())
+        .single();
+      
+      user = data;
+      if (error && error.code !== 'PGRST116') console.error(error);
+    } else {
+      // Fallback: try email login
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('email', normalizedInput.toLowerCase())
+        .single();
+      
+      user = data;
+      if (error && error.code !== 'PGRST116') console.error(error);
+    }
+
+    if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password'
+        message: 'Invalid Login ID or password'
       });
     }
 
@@ -150,7 +188,7 @@ const login = async (req, res) => {
     if (!isPasswordValid) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password'
+        message: 'Invalid Login ID or password'
       });
     }
 
@@ -172,7 +210,7 @@ const login = async (req, res) => {
       .eq('user_id', user.id)
       .eq('is_active', true);
 
-    const token = generateToken(user.id, user.email);
+    const token = generateToken(user.id, user.login_id);
 
     res.status(200).json({
       success: true,
@@ -180,6 +218,7 @@ const login = async (req, res) => {
       data: {
         user: {
           id: user.id,
+          loginId: user.login_id, // ✅ NEW
           email: user.email,
           firstName: user.first_name,
           lastName: user.last_name,
@@ -187,7 +226,8 @@ const login = async (req, res) => {
           role: user.role,
           isVerified: user.is_verified,
           kycStatus: user.kyc_status,
-          maxSavedAccounts: user.max_saved_accounts || 5 // ✅ NEW
+          maxSavedAccounts: user.max_saved_accounts || -1,
+          closingMode: user.closing_mode || false, // ✅ NEW
         },
         accounts: accounts,
         token
@@ -214,10 +254,10 @@ const getMe = async (req, res) => {
       .eq('user_id', req.user.id)
       .eq('is_active', true);
 
-    // ✅ Get max_saved_accounts from user
+    // Get full user data including new fields
     const { data: userData } = await supabase
       .from('users')
-      .select('max_saved_accounts')
+      .select('login_id, max_saved_accounts, closing_mode, brokerage_rate')
       .eq('id', req.user.id)
       .single();
 
@@ -226,7 +266,10 @@ const getMe = async (req, res) => {
       data: {
         user: {
           ...req.user,
-          maxSavedAccounts: userData?.max_saved_accounts || 5
+          loginId: userData?.login_id,
+          maxSavedAccounts: userData?.max_saved_accounts ?? -1,
+          closingMode: userData?.closing_mode ?? false,
+          brokerageRate: userData?.brokerage_rate ?? 0.0003,
         },
         accounts: accounts
       }
@@ -240,16 +283,16 @@ const getMe = async (req, res) => {
   }
 };
 
-// ✅ NEW: Quick login for saved accounts (validates token, returns fresh data)
+// ✅ Switch account (for saved accounts feature)
 // @route   POST /api/auth/switch-account
 const switchAccount = async (req, res) => {
   try {
-    const { email, token: savedToken } = req.body;
+    const { loginId, token: savedToken } = req.body; // ✅ Changed from email
 
-    if (!email || !savedToken) {
+    if (!loginId || !savedToken) {
       return res.status(400).json({
         success: false,
-        message: 'Email and token required'
+        message: 'Login ID and token required'
       });
     }
 
@@ -265,18 +308,25 @@ const switchAccount = async (req, res) => {
       });
     }
 
-    // Get user
+    // Get user by login_id
     const { data: user, error } = await supabase
       .from('users')
       .select('*')
       .eq('id', decoded.id)
-      .eq('email', email.toLowerCase())
       .single();
 
     if (error || !user) {
       return res.status(401).json({
         success: false,
         message: 'Account not found'
+      });
+    }
+
+    // Verify login_id matches
+    if (user.login_id !== loginId.toUpperCase()) {
+      return res.status(401).json({
+        success: false,
+        message: 'Account mismatch'
       });
     }
 
@@ -301,7 +351,7 @@ const switchAccount = async (req, res) => {
       .eq('is_active', true);
 
     // Generate new token
-    const newToken = generateToken(user.id, user.email);
+    const newToken = generateToken(user.id, user.login_id);
 
     res.status(200).json({
       success: true,
@@ -309,6 +359,7 @@ const switchAccount = async (req, res) => {
       data: {
         user: {
           id: user.id,
+          loginId: user.login_id,
           email: user.email,
           firstName: user.first_name,
           lastName: user.last_name,
@@ -316,7 +367,8 @@ const switchAccount = async (req, res) => {
           role: user.role,
           isVerified: user.is_verified,
           kycStatus: user.kyc_status,
-          maxSavedAccounts: user.max_saved_accounts || 5
+          maxSavedAccounts: user.max_saved_accounts ?? -1,
+          closingMode: user.closing_mode ?? false,
         },
         accounts: accounts,
         token: newToken
@@ -347,5 +399,5 @@ module.exports = {
   login,
   getMe,
   logout,
-  switchAccount // ✅ NEW
+  switchAccount
 };

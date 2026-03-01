@@ -1,5 +1,6 @@
+// frontend/src/pages/Login.jsx
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import useAuthStore from '../store/authStore';
 
@@ -7,12 +8,20 @@ const Login = () => {
   const navigate = useNavigate();
   const login = useAuthStore((state) => state.login);
   const [isLoading, setIsLoading] = useState(false);
-  const [formData, setFormData] = useState({ email: '', password: '' });
+  const [formData, setFormData] = useState({ loginId: '', password: '' }); // ✅ Changed from email
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    
+    if (!formData.loginId.trim()) {
+      return toast.error('Please enter your Login ID');
+    }
+    if (!formData.password) {
+      return toast.error('Please enter your password');
+    }
+
     setIsLoading(true);
-    const result = await login(formData.email, formData.password);
+    const result = await login(formData.loginId.trim(), formData.password);
     if (result.success) {
       toast.success('Login successful!');
       navigate('/dashboard');
@@ -38,17 +47,24 @@ const Login = () => {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* ✅ Login ID field instead of Email */}
           <div>
-            <label className="block text-xs mb-1.5" style={{ color: '#787b86' }}>Email</label>
+            <label className="block text-xs mb-1.5" style={{ color: '#787b86' }}>Login ID</label>
             <input
-              type="email"
-              value={formData.email}
-              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-              className="w-full px-4 py-3 rounded-lg border text-sm"
+              type="text"
+              value={formData.loginId}
+              onChange={(e) => setFormData({ ...formData, loginId: e.target.value.toUpperCase() })}
+              className="w-full px-4 py-3 rounded-lg border text-sm font-mono"
               style={{ background: '#2a2e39', borderColor: '#363a45', color: '#d1d4dc' }}
-              placeholder="Enter email"
+              placeholder="TA1000"
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}
               required
             />
+            <p className="text-xs mt-1" style={{ color: '#787b86' }}>
+              Your unique ID (e.g., TA1000)
+            </p>
           </div>
 
           <div>
@@ -67,7 +83,7 @@ const Login = () => {
           <button
             type="submit"
             disabled={isLoading}
-            className="w-full py-3 rounded-lg font-semibold text-white"
+            className="w-full py-3 rounded-lg font-semibold text-white disabled:opacity-50"
             style={{ background: '#2962ff' }}
           >
             {isLoading ? 'Logging in...' : 'Login'}
@@ -75,7 +91,8 @@ const Login = () => {
         </form>
 
         <p className="mt-4 text-center text-sm" style={{ color: '#787b86' }}>
-          New accounts are created by Admin.
+          Don't have a Login ID?<br />
+          Contact your administrator.
         </p>
       </div>
     </div>

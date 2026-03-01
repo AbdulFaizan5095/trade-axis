@@ -14,6 +14,9 @@ router.post('/users', adminController.createUser);
 router.patch('/users/:id/active', adminController.setUserActive);
 router.post('/users/:id/reset-password', adminController.resetPassword);
 
+// ✅ NEW: Closing mode toggle
+router.patch('/users/:id/closing-mode', adminController.toggleClosingMode);
+
 // Trading settings
 router.get('/leverage-options', adminController.getLeverageOptions);
 router.patch('/users/:id/leverage', adminController.updateUserLeverage);

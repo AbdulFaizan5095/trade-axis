@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import api from '../services/api';
 import socketService from '../services/socket';
 
-// ✅ Saved accounts storage key
+// Saved accounts storage key
 const SAVED_ACCOUNTS_KEY = 'trade_axis_saved_accounts';
 
 const useAuthStore = create((set, get) => ({
@@ -12,11 +12,12 @@ const useAuthStore = create((set, get) => ({
   token: localStorage.getItem('token'),
   isAuthenticated: false,
   isLoading: true,
-  savedAccounts: JSON.parse(localStorage.getItem(SAVED_ACCOUNTS_KEY) || '[]'), // ✅ NEW
+  savedAccounts: JSON.parse(localStorage.getItem(SAVED_ACCOUNTS_KEY) || '[]'),
 
-  login: async (email, password) => {
+  // ✅ Updated: Login with Login ID (TA1000 format)
+  login: async (loginId, password) => {
     try {
-      const response = await api.post('/auth/login', { email, password });
+      const response = await api.post('/auth/login', { loginId, password }); // ✅ Changed from email
       const { user, accounts, token } = response.data.data;
       
       localStorage.setItem('token', token);
@@ -24,7 +25,7 @@ const useAuthStore = create((set, get) => ({
       
       set({ user, accounts, token, isAuthenticated: true, isLoading: false });
       
-      // ✅ Auto-save account after successful login
+      // Auto-save account after successful login
       get().saveCurrentAccount();
       
       return { success: true };
@@ -37,13 +38,12 @@ const useAuthStore = create((set, get) => ({
     localStorage.removeItem('token');
     socketService.disconnect();
     set({ user: null, accounts: [], token: null, isAuthenticated: false });
-    // Note: We don't clear savedAccounts on logout
   },
 
-  // ✅ NEW: Full logout - removes saved account too
-  fullLogout: (email) => {
+  // Full logout - removes saved account too
+  fullLogout: (loginId) => {
     const { savedAccounts } = get();
-    const updated = savedAccounts.filter(acc => acc.email !== email);
+    const updated = savedAccounts.filter(acc => acc.loginId !== loginId);
     localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(updated));
     
     localStorage.removeItem('token');
@@ -70,7 +70,7 @@ const useAuthStore = create((set, get) => ({
       socketService.connect(token);
       set({ user, accounts, token, isAuthenticated: true, isLoading: false });
       
-      // ✅ Update saved account with fresh data
+      // Update saved account with fresh data
       get().saveCurrentAccount();
     } catch (error) {
       localStorage.removeItem('token');
@@ -80,18 +80,20 @@ const useAuthStore = create((set, get) => ({
 
   setAccounts: (accounts) => set({ accounts }),
 
-  // ✅ NEW: Save current account to saved accounts list
+  // ✅ Updated: Save current account using loginId
   saveCurrentAccount: () => {
     const { user, token, savedAccounts } = get();
     if (!user || !token) return;
 
-    const maxSaved = user.maxSavedAccounts || 5;
+    // -1 means unlimited
+    const maxSaved = user.maxSavedAccounts === -1 ? 999 : (user.maxSavedAccounts || 5);
     
-    // Check if already saved
-    const existingIndex = savedAccounts.findIndex(acc => acc.email === user.email);
+    // Check if already saved (by loginId)
+    const existingIndex = savedAccounts.findIndex(acc => acc.loginId === user.loginId);
     
     const accountData = {
       id: user.id,
+      loginId: user.loginId, // ✅ Use loginId instead of email
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
@@ -113,29 +115,32 @@ const useAuthStore = create((set, get) => ({
     set({ savedAccounts: updated });
   },
 
-  // ✅ NEW: Add account manually (login + save)
-  addAccount: async (email, password) => {
+  // ✅ Updated: Add account manually (login + save)
+  addAccount: async (loginId, password) => {
     const { user: currentUser, savedAccounts } = get();
-    const maxSaved = currentUser?.maxSavedAccounts || 5;
+    const maxSaved = currentUser?.maxSavedAccounts === -1 ? 999 : (currentUser?.maxSavedAccounts || 5);
 
     if (savedAccounts.length >= maxSaved) {
       return { 
         success: false, 
-        message: `Maximum ${maxSaved} saved accounts allowed. Remove one first.` 
+        message: maxSaved === 999 
+          ? 'Cannot add more accounts' 
+          : `Maximum ${maxSaved} saved accounts allowed. Remove one first.`
       };
     }
 
     try {
-      const response = await api.post('/auth/login', { email, password });
+      const response = await api.post('/auth/login', { loginId, password });
       const { user, token } = response.data.data;
       
       // Check if already exists
-      if (savedAccounts.some(acc => acc.email === user.email)) {
+      if (savedAccounts.some(acc => acc.loginId === user.loginId)) {
         return { success: false, message: 'Account already saved' };
       }
 
       const accountData = {
         id: user.id,
+        loginId: user.loginId,
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
@@ -153,12 +158,11 @@ const useAuthStore = create((set, get) => ({
     }
   },
 
-  // ✅ NEW: Switch to saved account
+  // ✅ Updated: Switch to saved account using loginId
   switchToAccount: async (savedAccount) => {
     try {
-      // Try to use saved token first
       const response = await api.post('/auth/switch-account', {
-        email: savedAccount.email,
+        loginId: savedAccount.loginId, // ✅ Use loginId
         token: savedAccount.token
       });
 
@@ -175,7 +179,6 @@ const useAuthStore = create((set, get) => ({
       
       return { success: true };
     } catch (error) {
-      // Token expired, need re-login
       return { 
         success: false, 
         message: error.response?.data?.message || 'Session expired. Please login again.',
@@ -184,26 +187,34 @@ const useAuthStore = create((set, get) => ({
     }
   },
 
-  // ✅ NEW: Remove saved account
-  removeSavedAccount: (email) => {
+  // ✅ Updated: Remove saved account by loginId
+  removeSavedAccount: (loginId) => {
     const { savedAccounts, user } = get();
     
     // Don't allow removing current account
-    if (user?.email === email) {
+    if (user?.loginId === loginId) {
       return { success: false, message: 'Cannot remove currently active account' };
     }
 
-    const updated = savedAccounts.filter(acc => acc.email !== email);
+    const updated = savedAccounts.filter(acc => acc.loginId !== loginId);
     localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(updated));
     set({ savedAccounts: updated });
     
     return { success: true };
   },
 
-  // ✅ NEW: Get max saved accounts for current user
+  // Get max saved accounts for current user (-1 = unlimited)
   getMaxSavedAccounts: () => {
     const { user } = get();
-    return user?.maxSavedAccounts || 5;
+    const max = user?.maxSavedAccounts;
+    if (max === -1 || max === undefined) return '∞'; // Unlimited
+    return max || 5;
+  },
+
+  // ✅ Check if user is in closing mode
+  isClosingMode: () => {
+    const { user } = get();
+    return user?.closingMode || false;
   },
 }));
 

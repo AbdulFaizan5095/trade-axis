@@ -218,8 +218,8 @@ const useTradingStore = create((set, get) => ({
     }
   },
 
-  // Close position
-  closeTrade: async (tradeId, accountId) => {
+  // In tradingStore.js, update closeTrade:
+  closeTrade: async (tradeId, accountId, closeQuantity = null) => {
     if (!tradeId || !accountId) {
       return {
         success: false,
@@ -232,13 +232,17 @@ const useTradingStore = create((set, get) => ({
     try {
       const response = await api.post(`/trading/close/${tradeId}`, {
         accountId,
+        closeQuantity, // ✅ Pass closeQuantity for partial close
       });
 
       if (response.data.success) {
-        set((state) => ({
-          openTrades: state.openTrades.filter((t) => t.id !== tradeId),
-          loading: false,
-        }));
+        // If full close, remove from openTrades
+        if (!closeQuantity || response.data.message?.includes('Position closed')) {
+          set((state) => ({
+            openTrades: state.openTrades.filter((t) => t.id !== tradeId),
+            loading: false,
+          }));
+        }
 
         await get().fetchOpenTrades(accountId);
         await get().fetchTradeHistory(accountId);
@@ -257,8 +261,7 @@ const useTradingStore = create((set, get) => ({
       }
     } catch (error) {
       console.error('Close trade error:', error);
-      const errorMessage =
-        error.response?.data?.message || 'Failed to close position';
+      const errorMessage = error.response?.data?.message || 'Failed to close position';
       set({ error: errorMessage, loading: false });
       return {
         success: false,
