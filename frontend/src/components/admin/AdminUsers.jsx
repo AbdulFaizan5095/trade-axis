@@ -2,7 +2,19 @@
 import { useEffect, useState } from 'react';
 import api from '../../services/api';
 import { toast } from 'react-hot-toast';
-import { ChevronDown, ChevronUp, Settings, RefreshCw, Lock, Unlock, Copy } from 'lucide-react';
+import { 
+  ChevronDown, 
+  ChevronUp, 
+  Settings, 
+  RefreshCw, 
+  Lock, 
+  Unlock, 
+  Copy, 
+  Plus,
+  DollarSign,
+  X,
+  Wallet
+} from 'lucide-react';
 
 // Leverage options (1:1 to 1:200)
 const LEVERAGE_OPTIONS = [1, 2, 5, 10, 20, 25, 50, 100, 200];
@@ -25,6 +37,12 @@ export default function AdminUsers() {
   const [expandedUserId, setExpandedUserId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
 
+  // ✅ Add Money Modal State
+  const [addMoneyModal, setAddMoneyModal] = useState(null); // { user, account }
+  const [addMoneyAmount, setAddMoneyAmount] = useState('');
+  const [addMoneyNote, setAddMoneyNote] = useState('');
+  const [addMoneyLoading, setAddMoneyLoading] = useState(false);
+
   const [form, setForm] = useState({
     email: '',
     firstName: '',
@@ -33,11 +51,11 @@ export default function AdminUsers() {
     role: 'user',
     password: '',
     leverage: 5,
-    maxSavedAccounts: -1, // ✅ -1 = Unlimited
+    maxSavedAccounts: -1,
     brokerageRate: 0.0003,
     demoBalance: 100000,
-    createDemo: true,
-    createLive: true,
+    createDemo: true,   // ✅ Create Demo Account
+    createLive: true,   // ✅ Create Live Account
   });
 
   const loadUsers = async () => {
@@ -74,6 +92,11 @@ export default function AdminUsers() {
       return toast.error('Email, First name, Last name required');
     }
 
+    // ✅ Validate at least one account type is selected
+    if (!form.createDemo && !form.createLive) {
+      return toast.error('Select at least one account type (Demo or Live)');
+    }
+
     try {
       const res = await api.post('/admin/users', {
         ...form,
@@ -83,11 +106,10 @@ export default function AdminUsers() {
       
       const data = res.data?.data;
       const tempPassword = data?.tempPassword;
-      const loginId = data?.loginId; // ✅ Get the generated Login ID
+      const loginId = data?.loginId;
       
       toast.success('User created');
 
-      // ✅ Show Login ID prominently
       if (loginId) {
         const credentials = `Login ID: ${loginId}\nPassword: ${tempPassword}`;
         window.prompt('User credentials (copy now):', credentials);
@@ -127,7 +149,6 @@ export default function AdminUsers() {
     }
   };
 
-  // ✅ NEW: Toggle closing mode
   const toggleClosingMode = async (u) => {
     try {
       const newMode = !u.closing_mode;
@@ -180,6 +201,190 @@ export default function AdminUsers() {
     }
   };
 
+  // ✅ NEW: Add Money to Account
+  const handleAddMoney = async () => {
+    if (!addMoneyModal || !addMoneyAmount || Number(addMoneyAmount) <= 0) {
+      return toast.error('Enter a valid amount');
+    }
+
+    setAddMoneyLoading(true);
+    try {
+      const res = await api.post(`/admin/users/${addMoneyModal.user.id}/add-balance`, {
+        accountId: addMoneyModal.account.id,
+        amount: Number(addMoneyAmount),
+        note: addMoneyNote || 'Admin deposit - Cash received offline',
+        type: 'admin_deposit'
+      });
+
+      if (res.data?.success) {
+        toast.success(`₹${Number(addMoneyAmount).toLocaleString('en-IN')} added to ${addMoneyModal.account.account_number}`);
+        setAddMoneyModal(null);
+        setAddMoneyAmount('');
+        setAddMoneyNote('');
+        loadUsers();
+      } else {
+        toast.error(res.data?.message || 'Failed to add money');
+      }
+    } catch (e) {
+      console.error('Add money error:', e);
+      toast.error(e.response?.data?.message || 'Failed to add money');
+    } finally {
+      setAddMoneyLoading(false);
+    }
+  };
+
+  // ✅ Add Money Modal Component
+  const AddMoneyModal = () => {
+    if (!addMoneyModal) return null;
+
+    const { user, account } = addMoneyModal;
+
+    return (
+      <div 
+        className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+        onClick={() => setAddMoneyModal(null)}
+      >
+        <div 
+          className="w-full max-w-sm rounded-xl"
+          style={{ background: '#1e222d', border: '1px solid #363a45' }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between p-4 border-b" style={{ borderColor: '#363a45' }}>
+            <div className="flex items-center gap-2">
+              <Wallet size={20} color="#26a69a" />
+              <h3 className="font-bold text-lg" style={{ color: '#d1d4dc' }}>Add Money</h3>
+            </div>
+            <button onClick={() => setAddMoneyModal(null)}>
+              <X size={22} color="#787b86" />
+            </button>
+          </div>
+
+          <div className="p-4 space-y-4">
+            {/* User & Account Info */}
+            <div className="p-3 rounded-lg" style={{ background: '#2a2e39' }}>
+              <div className="text-sm" style={{ color: '#787b86' }}>User</div>
+              <div className="font-bold" style={{ color: '#d1d4dc' }}>
+                {user.login_id} - {user.first_name} {user.last_name}
+              </div>
+              <div className="text-xs mt-1" style={{ color: '#787b86' }}>{user.email}</div>
+              
+              <div className="mt-3 pt-3 border-t" style={{ borderColor: '#363a45' }}>
+                <div className="text-sm" style={{ color: '#787b86' }}>Account</div>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="font-bold" style={{ color: '#d1d4dc' }}>{account.account_number}</span>
+                  <span 
+                    className="px-2 py-0.5 rounded text-xs"
+                    style={{ 
+                      background: account.is_demo ? '#f5c54220' : '#26a69a20',
+                      color: account.is_demo ? '#f5c542' : '#26a69a'
+                    }}
+                  >
+                    {account.is_demo ? 'DEMO' : 'LIVE'}
+                  </span>
+                </div>
+                <div className="text-sm mt-1" style={{ color: '#787b86' }}>
+                  Current Balance: <span style={{ color: '#26a69a' }}>₹{parseFloat(account.balance || 0).toLocaleString('en-IN')}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Amount Input */}
+            <div>
+              <label className="block text-sm mb-2" style={{ color: '#787b86' }}>
+                Amount to Add (₹)
+              </label>
+              <input
+                type="number"
+                value={addMoneyAmount}
+                onChange={(e) => setAddMoneyAmount(e.target.value)}
+                placeholder="Enter amount"
+                className="w-full px-4 py-3 rounded-lg text-lg font-bold text-center"
+                style={{ background: '#2a2e39', border: '1px solid #363a45', color: '#d1d4dc' }}
+                min="1"
+                autoFocus
+              />
+            </div>
+
+            {/* Quick Amount Buttons */}
+            <div className="grid grid-cols-4 gap-2">
+              {[1000, 5000, 10000, 50000].map((amt) => (
+                <button
+                  key={amt}
+                  onClick={() => setAddMoneyAmount(String(amt))}
+                  className="py-2 rounded-lg text-xs font-medium"
+                  style={{
+                    background: Number(addMoneyAmount) === amt ? '#26a69a' : '#2a2e39',
+                    color: Number(addMoneyAmount) === amt ? '#fff' : '#787b86',
+                    border: '1px solid #363a45',
+                  }}
+                >
+                  ₹{(amt / 1000)}K
+                </button>
+              ))}
+            </div>
+
+            {/* Note */}
+            <div>
+              <label className="block text-sm mb-2" style={{ color: '#787b86' }}>
+                Note (Optional)
+              </label>
+              <input
+                type="text"
+                value={addMoneyNote}
+                onChange={(e) => setAddMoneyNote(e.target.value)}
+                placeholder="e.g., Cash received at office"
+                className="w-full px-4 py-2.5 rounded-lg text-sm"
+                style={{ background: '#2a2e39', border: '1px solid #363a45', color: '#d1d4dc' }}
+              />
+            </div>
+
+            {/* Preview */}
+            {addMoneyAmount && Number(addMoneyAmount) > 0 && (
+              <div className="p-3 rounded-lg" style={{ background: '#26a69a20', border: '1px solid #26a69a50' }}>
+                <div className="flex justify-between text-sm">
+                  <span style={{ color: '#787b86' }}>Current Balance</span>
+                  <span style={{ color: '#d1d4dc' }}>₹{parseFloat(account.balance || 0).toLocaleString('en-IN')}</span>
+                </div>
+                <div className="flex justify-between text-sm mt-1">
+                  <span style={{ color: '#787b86' }}>Adding</span>
+                  <span style={{ color: '#26a69a' }}>+₹{Number(addMoneyAmount).toLocaleString('en-IN')}</span>
+                </div>
+                <div className="flex justify-between text-sm mt-2 pt-2 border-t" style={{ borderColor: '#26a69a50' }}>
+                  <span className="font-medium" style={{ color: '#d1d4dc' }}>New Balance</span>
+                  <span className="font-bold" style={{ color: '#26a69a' }}>
+                    ₹{(parseFloat(account.balance || 0) + Number(addMoneyAmount)).toLocaleString('en-IN')}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Submit Button */}
+            <button
+              onClick={handleAddMoney}
+              disabled={addMoneyLoading || !addMoneyAmount || Number(addMoneyAmount) <= 0}
+              className="w-full py-3.5 rounded-lg font-semibold text-base disabled:opacity-50 flex items-center justify-center gap-2"
+              style={{ background: '#26a69a', color: '#fff' }}
+            >
+              {addMoneyLoading ? (
+                'Processing...'
+              ) : (
+                <>
+                  <Plus size={20} />
+                  Add ₹{Number(addMoneyAmount || 0).toLocaleString('en-IN')} to Account
+                </>
+              )}
+            </button>
+
+            <div className="text-xs text-center" style={{ color: '#787b86' }}>
+              This will directly add funds to the user's account balance.
+              A transaction record will be created.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="h-full flex flex-col" style={{ background: '#1e222d' }}>
       <div className="p-4 border-b" style={{ borderColor: '#363a45' }}>
@@ -193,7 +398,6 @@ export default function AdminUsers() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {/* ✅ Search by Login ID */}
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -264,6 +468,49 @@ export default function AdminUsers() {
               />
             </div>
 
+            {/* ✅ NEW: Account Type Checkboxes */}
+            <div className="p-3 rounded-lg" style={{ background: '#1e222d', border: '1px solid #363a45' }}>
+              <label className="text-xs mb-2 block font-medium" style={{ color: '#787b86' }}>
+                Create Account Types
+              </label>
+              <div className="flex items-center gap-4">
+                {/* Demo Account Checkbox */}
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.createDemo}
+                    onChange={(e) => setForm((p) => ({ ...p, createDemo: e.target.checked }))}
+                    className="w-4 h-4 rounded"
+                    style={{ accentColor: '#f5c542' }}
+                  />
+                  <span className="text-sm font-medium" style={{ color: '#f5c542' }}>
+                    Demo Account
+                  </span>
+                </label>
+
+                {/* Live Account Checkbox */}
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={form.createLive}
+                    onChange={(e) => setForm((p) => ({ ...p, createLive: e.target.checked }))}
+                    className="w-4 h-4 rounded"
+                    style={{ accentColor: '#26a69a' }}
+                  />
+                  <span className="text-sm font-medium" style={{ color: '#26a69a' }}>
+                    Live Account
+                  </span>
+                </label>
+              </div>
+
+              {/* Warning if none selected */}
+              {!form.createDemo && !form.createLive && (
+                <div className="mt-2 text-xs" style={{ color: '#ef5350' }}>
+                  ⚠️ Please select at least one account type
+                </div>
+              )}
+            </div>
+
             {/* Trading Settings */}
             <div className="grid grid-cols-3 gap-2">
               <div>
@@ -295,25 +542,29 @@ export default function AdminUsers() {
               </div>
 
               <div>
-                <label className="text-xs mb-1 block" style={{ color: '#787b86' }}>Demo Balance</label>
+                <label className="text-xs mb-1 block" style={{ color: '#787b86' }}>
+                  Demo Balance {!form.createDemo && '(N/A)'}
+                </label>
                 <input
                   value={form.demoBalance}
                   onChange={(e) => setForm((p) => ({ ...p, demoBalance: e.target.value }))}
                   type="number"
-                  className="w-full px-3 py-2 rounded text-sm"
+                  disabled={!form.createDemo}
+                  className="w-full px-3 py-2 rounded text-sm disabled:opacity-50"
                   style={{ background: '#1e222d', border: '1px solid #363a45', color: '#d1d4dc' }}
                 />
               </div>
             </div>
 
-            {/* ✅ Info about Login ID */}
+            {/* Info about Login ID */}
             <div className="p-2 rounded text-xs" style={{ background: '#2962ff20', color: '#2962ff' }}>
               💡 A unique Login ID (TA1000, TA1001, etc.) will be auto-generated
             </div>
 
             <button
               onClick={createUser}
-              className="py-2.5 rounded font-semibold text-sm"
+              disabled={!form.createDemo && !form.createLive}
+              className="py-2.5 rounded font-semibold text-sm disabled:opacity-50"
               style={{ background: '#2962ff', color: '#fff' }}
             >
               Create User
@@ -350,7 +601,6 @@ export default function AdminUsers() {
                     <div className="flex items-center justify-between">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          {/* ✅ Login ID prominently displayed */}
                           <button
                             onClick={(e) => { e.stopPropagation(); copyLoginId(u.login_id); }}
                             className="flex items-center gap-1 px-2 py-1 rounded font-mono text-sm font-bold"
@@ -377,7 +627,6 @@ export default function AdminUsers() {
                             <span className="text-[10px]" style={{ color: '#ef5350' }}>● Inactive</span>
                           )}
 
-                          {/* ✅ Closing Mode indicator */}
                           {u.closing_mode && (
                             <span 
                               className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium"
@@ -395,7 +644,6 @@ export default function AdminUsers() {
                       </div>
 
                       <div className="flex items-center gap-2">
-                        {/* ✅ Closing Mode Toggle */}
                         <button
                           onClick={(e) => { e.stopPropagation(); toggleClosingMode(u); }}
                           className="p-2 rounded"
@@ -437,6 +685,7 @@ export default function AdminUsers() {
                     <div 
                       className="p-3 border-t"
                       style={{ borderColor: '#363a45', background: '#252832' }}
+                      onClick={(e) => e.stopPropagation()}
                     >
                       <div className="flex items-center gap-2 mb-3">
                         <Settings size={14} color="#787b86" />
@@ -484,43 +733,62 @@ export default function AdminUsers() {
                           {u.accounts.map((acc) => (
                             <div 
                               key={acc.id}
-                              className="flex items-center justify-between p-2 rounded"
+                              className="p-2 rounded"
                               style={{ background: '#1e222d' }}
                             >
-                              <div>
-                                <span className="text-xs font-medium" style={{ color: '#d1d4dc' }}>
-                                  {acc.account_number}
-                                </span>
-                                <span 
-                                  className="ml-2 px-1.5 py-0.5 rounded text-[10px]"
-                                  style={{ 
-                                    background: acc.is_demo ? '#f5c54220' : '#26a69a20',
-                                    color: acc.is_demo ? '#f5c542' : '#26a69a'
-                                  }}
-                                >
-                                  {acc.is_demo ? 'DEMO' : 'LIVE'}
-                                </span>
-                                <span className="ml-2 text-[10px]" style={{ color: '#787b86' }}>
-                                  ₹{parseFloat(acc.balance || 0).toLocaleString('en-IN')}
-                                </span>
-                              </div>
-                              
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs" style={{ color: '#787b86' }}>Leverage:</span>
-                                <select
-                                  value={acc.leverage || 5}
-                                  onChange={(e) => updateLeverage(u.id, acc.id, e.target.value)}
-                                  className="px-2 py-1 rounded text-xs font-medium"
-                                  style={{ 
-                                    background: '#2962ff20', 
-                                    border: '1px solid #2962ff50', 
-                                    color: '#2962ff' 
-                                  }}
-                                >
-                                  {LEVERAGE_OPTIONS.map((lev) => (
-                                    <option key={lev} value={lev}>1:{lev}</option>
-                                  ))}
-                                </select>
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-medium" style={{ color: '#d1d4dc' }}>
+                                    {acc.account_number}
+                                  </span>
+                                  <span 
+                                    className="px-1.5 py-0.5 rounded text-[10px]"
+                                    style={{ 
+                                      background: acc.is_demo ? '#f5c54220' : '#26a69a20',
+                                      color: acc.is_demo ? '#f5c542' : '#26a69a'
+                                    }}
+                                  >
+                                    {acc.is_demo ? 'DEMO' : 'LIVE'}
+                                  </span>
+                                  <span className="text-[10px]" style={{ color: '#787b86' }}>
+                                    ₹{parseFloat(acc.balance || 0).toLocaleString('en-IN')}
+                                  </span>
+                                </div>
+                                
+                                <div className="flex items-center gap-2">
+                                  {/* ✅ Add Money Button (Only for LIVE accounts) */}
+                                  {!acc.is_demo && (
+                                    <button
+                                      onClick={() => setAddMoneyModal({ user: u, account: acc })}
+                                      className="px-2 py-1 rounded text-[10px] font-medium flex items-center gap-1"
+                                      style={{ 
+                                        background: '#26a69a20', 
+                                        border: '1px solid #26a69a50', 
+                                        color: '#26a69a' 
+                                      }}
+                                      title="Add money to this account"
+                                    >
+                                      <Plus size={12} />
+                                      Add Money
+                                    </button>
+                                  )}
+
+                                  <span className="text-xs" style={{ color: '#787b86' }}>Leverage:</span>
+                                  <select
+                                    value={acc.leverage || 5}
+                                    onChange={(e) => updateLeverage(u.id, acc.id, e.target.value)}
+                                    className="px-2 py-1 rounded text-xs font-medium"
+                                    style={{ 
+                                      background: '#2962ff20', 
+                                      border: '1px solid #2962ff50', 
+                                      color: '#2962ff' 
+                                    }}
+                                  >
+                                    {LEVERAGE_OPTIONS.map((lev) => (
+                                      <option key={lev} value={lev}>1:{lev}</option>
+                                    ))}
+                                  </select>
+                                </div>
                               </div>
                             </div>
                           ))}
@@ -534,6 +802,9 @@ export default function AdminUsers() {
           )}
         </div>
       </div>
+
+      {/* ✅ Add Money Modal */}
+      <AddMoneyModal />
     </div>
   );
 }

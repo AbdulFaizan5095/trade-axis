@@ -3,19 +3,32 @@
 
 /* ===== MT5-inspired Theme ===== */
 :root{
-  /* terminal */
-  --mt5-bg: #1b1f2a;          /* main background */
-  --mt5-panel: #202636;       /* panels */
-  --mt5-panel2: #1f2433;      /* headers / tabs */
-  --mt5-border: #2d3446;      /* separators */
-  --mt5-text: #d7dde8;        /* primary text */
-  --mt5-muted: #9aa4b2;       /* secondary text */
+  --mt5-bg: #1b1f2a;
+  --mt5-panel: #202636;
+  --mt5-panel2: #1f2433;
+  --mt5-border: #2d3446;
+  --mt5-text: #d7dde8;
+  --mt5-muted: #9aa4b2;
 
-  /* accents */
-  --mt5-blue: #4a90e2;        /* selection */
-  --mt5-green: #00c853;       /* buy/profit */
-  --mt5-red: #ff5252;         /* sell/loss */
+  --mt5-blue: #4a90e2;
+  --mt5-green: #00c853;
+  --mt5-red: #ff5252;
   --mt5-yellow: #ffd54f;
+}
+
+/* ✅ Light theme overrides */
+:root[data-theme="light"]{
+  --mt5-bg: #f6f7fb;
+  --mt5-panel: #ffffff;
+  --mt5-panel2: #f1f5f9;
+  --mt5-border: #e2e8f0;
+  --mt5-text: #0f172a;
+  --mt5-muted: #475569;
+
+  --mt5-blue: #2962ff;
+  --mt5-green: #16a34a;
+  --mt5-red: #dc2626;
+  --mt5-yellow: #ca8a04;
 }
 
 * {
@@ -32,14 +45,12 @@ body {
   font-family: Segoe UI, Tahoma, Arial, sans-serif;
   background: var(--mt5-bg);
   color: var(--mt5-text);
-  /* ✅ INCREASED base font size from 12px to 14px */
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* ✅ Larger text for better readability */
 h1, h2, h3, h4, h5, h6 {
   font-weight: 600;
 }
@@ -49,7 +60,6 @@ h2 { font-size: 1.75rem; }
 h3 { font-size: 1.5rem; }
 h4 { font-size: 1.25rem; }
 
-/* Scrollbars (MT5-like subtle) */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -65,7 +75,6 @@ h4 { font-size: 1.25rem; }
   background: #3a425a;
 }
 
-/* ===== Utility helpers used across UI ===== */
 .mt5-bg { background: var(--mt5-bg); }
 .mt5-panel { background: var(--mt5-panel); }
 .mt5-panel2 { background: var(--mt5-panel2); }
@@ -77,30 +86,25 @@ h4 { font-size: 1.25rem; }
 .text-loss { color: var(--mt5-red); }
 .text-accent { color: var(--mt5-blue); }
 
-/* Keep your current "green/red" class names working */
 .text-green-500 { color: var(--mt5-green); }
 .text-red-500 { color: var(--mt5-red); }
 .bg-green-500\/20 { background-color: rgba(0, 200, 83, 0.18); }
 .bg-red-500\/20 { background-color: rgba(255, 82, 82, 0.18); }
 
-/* ✅ Larger inputs and buttons */
 input, select, textarea, button {
   font-size: 14px;
 }
 
-/* Prevent zoom on mobile inputs */
 @media (max-width: 768px) {
   input, select, textarea {
     font-size: 16px !important;
   }
   
-  /* ✅ Slightly smaller base on mobile but still readable */
   body {
     font-size: 14px;
   }
 }
 
-/* Safe area */
 .safe-area-bottom {
   padding-bottom: env(safe-area-inset-bottom);
 }
@@ -108,7 +112,6 @@ input, select, textarea, button {
   padding-top: env(safe-area-inset-top);
 }
 
-/* ✅ Custom classes for larger text */
 .text-lg-custom {
   font-size: 1.125rem;
   line-height: 1.6;
@@ -119,7 +122,6 @@ input, select, textarea, button {
   line-height: 1.6;
 }
 
-/* Logo styles for transparent PNG */
 .logo-container {
   display: flex;
   align-items: center;
@@ -131,7 +133,6 @@ input, select, textarea, button {
   image-rendering: crisp-edges;
 }
 
-/* App name gradient text (optional) */
 .app-name-gradient {
   background: linear-gradient(135deg, #26a69a 0%, #2962ff 100%);
   -webkit-background-clip: text;

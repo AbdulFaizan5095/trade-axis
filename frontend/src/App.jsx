@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import useAuthStore from './store/authStore';
+import useSettingsStore from './store/settingsStore';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 
@@ -27,10 +28,15 @@ const ProtectedRoute = ({ children }) => {
 
 function App() {
   const checkAuth = useAuthStore((state) => state.checkAuth);
+  const theme = useSettingsStore((s) => s.interface.theme);
 
   useEffect(() => {
     checkAuth();
   }, [checkAuth]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
 
   return (
     <BrowserRouter>
@@ -53,13 +59,8 @@ function App() {
       />
 
       <Routes>
-        {/* Public */}
         <Route path="/login" element={<Login />} />
-
-        {/* ✅ No public registration route */}
         <Route path="/register" element={<Navigate to="/login" replace />} />
-
-        {/* Protected */}
         <Route
           path="/dashboard"
           element={
@@ -68,11 +69,7 @@ function App() {
             </ProtectedRoute>
           }
         />
-
-        {/* Default */}
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
-
-        {/* Catch-all */}
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </BrowserRouter>

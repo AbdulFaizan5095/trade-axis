@@ -1,373 +1,233 @@
 // frontend/src/components/charts/PriceChart.jsx
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { createChart } from 'lightweight-charts';
 import api from '../../services/api';
+import socketService from '../../services/socket';
 
-export default function PriceChart({
-  symbol,
-  timeframe = '1h',
-  mode = 'candles', // 'candles' | 'bars' | 'line'
-  height = 300,
-  indicators = [],
-  crosshairEnabled = false,
-  showVolume = true,
-  onCrosshairMove,
-}) {
-  const containerRef = useRef(null);
+const PriceChart = ({ symbol, timeframe = '15m', mode = 'candles', height = 400, crosshairEnabled = true }) => {
+  const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
-  const mainSeriesRef = useRef(null);
-  const volumeSeriesRef = useRef(null);
+  const seriesRef = useRef(null);
   const resizeObserverRef = useRef(null);
-  const isMountedRef = useRef(true);
-  const [isLoading, setIsLoading] = useState(false);
+  const lastUpdateRef = useRef(0);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Safely remove a series
-  const removeSeries = useCallback((seriesRef) => {
-    if (chartRef.current && seriesRef.current) {
-      try {
-        chartRef.current.removeSeries(seriesRef.current);
-      } catch (e) {
-        // Series might already be removed, ignore
-        console.debug('Series already removed');
+  // Memoize chart options to prevent re-creation
+  const chartOptions = useMemo(() => ({
+    layout: {
+      background: { type: 'solid', color: '#131722' },
+      textColor: '#d1d4dc',
+    },
+    grid: {
+      vertLines: { color: '#1e222d' },
+      horzLines: { color: '#1e222d' },
+    },
+    crosshair: {
+      mode: crosshairEnabled ? 1 : 0,
+      vertLine: {
+        color: '#758696',
+        width: 1,
+        style: 2,
+        labelBackgroundColor: '#2962ff',
+      },
+      horzLine: {
+        color: '#758696',
+        width: 1,
+        style: 2,
+        labelBackgroundColor: '#2962ff',
+      },
+    },
+    rightPriceScale: {
+      borderColor: '#2a2e39',
+      scaleMargins: { top: 0.1, bottom: 0.1 },
+    },
+    timeScale: {
+      borderColor: '#2a2e39',
+      timeVisible: true,
+      secondsVisible: false,
+    },
+    handleScroll: { vertTouchDrag: false },
+  }), [crosshairEnabled]);
+
+  // Fetch candles
+  const fetchCandles = useCallback(async () => {
+    if (!symbol) return;
+    
+    setLoading(true);
+    setError(null);
+
+    try {
+      const res = await api.get(`/market/candles/${symbol}`, {
+        params: { timeframe, count: 300 },
+      });
+
+      if (res.data.success && res.data.candles?.length > 0) {
+        return res.data.candles;
       }
-      seriesRef.current = null;
+      return [];
+    } catch (err) {
+      console.error('Failed to fetch candles:', err);
+      setError('Failed to load chart data');
+      return [];
+    } finally {
+      setLoading(false);
     }
-  }, []);
+  }, [symbol, timeframe]);
 
   // Initialize chart
   useEffect(() => {
-    isMountedRef.current = true;
+    if (!chartContainerRef.current) return;
 
-    if (!containerRef.current) return;
+    // Clean up existing chart
+    if (chartRef.current) {
+      chartRef.current.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+    }
 
-    // Don't recreate if chart already exists
-    if (chartRef.current) return;
-
-    const chart = createChart(containerRef.current, {
-      layout: {
-        background: { type: 'solid', color: '#131722' },
-        textColor: '#d1d4dc',
-      },
-      grid: {
-        vertLines: { color: '#1e222d', style: 1 },
-        horzLines: { color: '#1e222d', style: 1 },
-      },
-      rightPriceScale: {
-        borderColor: '#2a2e39',
-        scaleMargins: { top: 0.1, bottom: 0.2 },
-      },
-      timeScale: {
-        borderColor: '#2a2e39',
-        timeVisible: true,
-        secondsVisible: false,
-        rightOffset: 5,
-        barSpacing: 8,
-        fixLeftEdge: true,
-        lockVisibleTimeRangeOnResize: true,
-      },
-      crosshair: {
-        mode: crosshairEnabled ? 1 : 0,
-        vertLine: {
-          color: '#758696',
-          width: 1,
-          style: 2,
-          labelBackgroundColor: '#2962ff',
-        },
-        horzLine: {
-          color: '#758696',
-          width: 1,
-          style: 2,
-          labelBackgroundColor: '#2962ff',
-        },
-      },
-      handleScroll: { mouseWheel: true, pressedMouseMove: true },
-      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
-      width: containerRef.current.clientWidth,
+    // Create new chart
+    const chart = createChart(chartContainerRef.current, {
+      ...chartOptions,
+      width: chartContainerRef.current.clientWidth,
       height,
     });
 
     chartRef.current = chart;
 
-    // Crosshair move handler
-    if (onCrosshairMove) {
-      chart.subscribeCrosshairMove((param) => {
-        if (!param.point || !param.time) return;
-        const data = param.seriesData.get(mainSeriesRef.current);
-        if (data) {
-          onCrosshairMove({ time: param.time, ...data });
-        }
+    // Create series based on mode
+    if (mode === 'candles') {
+      seriesRef.current = chart.addCandlestickSeries({
+        upColor: '#26a69a',
+        downColor: '#ef5350',
+        borderUpColor: '#26a69a',
+        borderDownColor: '#ef5350',
+        wickUpColor: '#26a69a',
+        wickDownColor: '#ef5350',
+      });
+    } else if (mode === 'bars') {
+      seriesRef.current = chart.addBarSeries({
+        upColor: '#26a69a',
+        downColor: '#ef5350',
+      });
+    } else {
+      seriesRef.current = chart.addLineSeries({
+        color: '#2962ff',
+        lineWidth: 2,
       });
     }
 
-    // ResizeObserver for responsive chart
-    const resizeObserver = new ResizeObserver((entries) => {
-      if (!isMountedRef.current) return;
-      if (!containerRef.current || !chartRef.current) return;
-
-      const entry = entries[0];
-      if (entry) {
-        const { width } = entry.contentRect;
-        if (width > 0) {
-          chartRef.current.applyOptions({ width, height });
-          chartRef.current.timeScale().fitContent();
-        }
+    // Handle resize
+    resizeObserverRef.current = new ResizeObserver((entries) => {
+      if (entries[0] && chartRef.current) {
+        const { width } = entries[0].contentRect;
+        chartRef.current.applyOptions({ width });
       }
     });
 
-    resizeObserver.observe(containerRef.current);
-    resizeObserverRef.current = resizeObserver;
+    resizeObserverRef.current.observe(chartContainerRef.current);
+
+    // Load initial data
+    fetchCandles().then((candles) => {
+      if (candles.length > 0 && seriesRef.current) {
+        if (mode === 'line') {
+          const lineData = candles.map((c) => ({ time: c.time, value: c.close }));
+          seriesRef.current.setData(lineData);
+        } else {
+          seriesRef.current.setData(candles);
+        }
+        chart.timeScale().fitContent();
+      }
+    });
 
     return () => {
-      isMountedRef.current = false;
-
-      // Cleanup resize observer
       if (resizeObserverRef.current) {
         resizeObserverRef.current.disconnect();
-        resizeObserverRef.current = null;
       }
-
-      // Clear series references first
-      mainSeriesRef.current = null;
-      volumeSeriesRef.current = null;
-
-      // Remove chart
       if (chartRef.current) {
-        try {
-          chartRef.current.remove();
-        } catch (e) {
-          console.debug('Chart already removed');
-        }
+        chartRef.current.remove();
         chartRef.current = null;
+        seriesRef.current = null;
       }
     };
-  }, [height, crosshairEnabled, onCrosshairMove]);
+  }, [symbol, timeframe, mode, height, chartOptions, fetchCandles]);
 
-  // Update crosshair mode when prop changes
-  useEffect(() => {
-    if (chartRef.current) {
-      chartRef.current.applyOptions({
-        crosshair: { mode: crosshairEnabled ? 1 : 0 },
-      });
-    }
-  }, [crosshairEnabled]);
-
-  // Create/recreate series when mode changes
-  useEffect(() => {
-    const chart = chartRef.current;
-    if (!chart || !isMountedRef.current) return;
-
-    // Remove existing main series
-    removeSeries(mainSeriesRef);
-    removeSeries(volumeSeriesRef);
-
-    // Create new series based on mode
-    try {
-      if (mode === 'line') {
-        mainSeriesRef.current = chart.addAreaSeries({
-          lineColor: '#2962ff',
-          topColor: 'rgba(41, 98, 255, 0.4)',
-          bottomColor: 'rgba(41, 98, 255, 0.0)',
-          lineWidth: 2,
-          priceLineVisible: true,
-          lastValueVisible: true,
-        });
-      } else if (mode === 'bars') {
-        mainSeriesRef.current = chart.addBarSeries({
-          upColor: '#26a69a',
-          downColor: '#ef5350',
-          thinBars: false,
-        });
-      } else {
-        // Default: candlestick
-        mainSeriesRef.current = chart.addCandlestickSeries({
-          upColor: '#26a69a',
-          downColor: '#ef5350',
-          borderUpColor: '#26a69a',
-          borderDownColor: '#ef5350',
-          wickUpColor: '#26a69a',
-          wickDownColor: '#ef5350',
-        });
-      }
-
-      // Add volume series if enabled
-      if (showVolume) {
-        volumeSeriesRef.current = chart.addHistogramSeries({
-          color: '#26a69a',
-          priceFormat: { type: 'volume' },
-          priceScaleId: '',
-          scaleMargins: { top: 0.8, bottom: 0 },
-        });
-      }
-    } catch (e) {
-      console.error('Error creating series:', e);
-      setError('Failed to create chart series');
-    }
-  }, [mode, showVolume, removeSeries]);
-
-  // Load data when symbol/timeframe changes
+  // Handle real-time price updates with throttling
   useEffect(() => {
     if (!symbol) return;
 
-    let cancelled = false;
-    const controller = new AbortController();
+    const handlePriceUpdate = (data) => {
+      if (data.symbol !== symbol) return;
+      if (!seriesRef.current) return;
 
-    const loadData = async () => {
-      setIsLoading(true);
-      setError(null);
+      // Throttle updates to max once per 500ms to prevent blinking
+      const now = Date.now();
+      if (now - lastUpdateRef.current < 500) return;
+      lastUpdateRef.current = now;
+
+      const price = data.last || data.bid || 0;
+      if (!price) return;
+
+      const timestamp = Math.floor(Date.now() / 1000);
 
       try {
-        const response = await api.get(
-          `/market/candles/${symbol}?timeframe=${timeframe}&count=300`,
-          { signal: controller.signal }
-        );
-
-        if (cancelled || !isMountedRef.current) return;
-
-        const candles = response.data?.data || [];
-        
-        if (candles.length === 0) {
-          setError('No data available');
-          setIsLoading(false);
-          return;
-        }
-
-        const mainSeries = mainSeriesRef.current;
-        const volumeSeries = volumeSeriesRef.current;
-        const chart = chartRef.current;
-
-        if (!mainSeries || !chart) {
-          setIsLoading(false);
-          return;
-        }
-
-        // Format data based on chart mode
         if (mode === 'line') {
-          const lineData = candles.map((c) => ({
-            time: c.time,
-            value: c.close,
-          }));
-          mainSeries.setData(lineData);
+          seriesRef.current.update({ time: timestamp, value: price });
         } else {
-          // Candlestick or bar data
-          const ohlcData = candles.map((c) => ({
-            time: c.time,
-            open: c.open,
-            high: c.high,
-            low: c.low,
-            close: c.close,
-          }));
-          mainSeries.setData(ohlcData);
+          // For candles/bars, update the last candle
+          seriesRef.current.update({
+            time: timestamp,
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+          });
         }
-
-        // Set volume data if series exists
-        if (volumeSeries && candles[0]?.volume !== undefined) {
-          const volumeData = candles.map((c) => ({
-            time: c.time,
-            value: c.volume || 0,
-            color: c.close >= c.open ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)',
-          }));
-          volumeSeries.setData(volumeData);
-        }
-
-        // Fit content to view
-        chart.timeScale().fitContent();
-        setIsLoading(false);
-      } catch (e) {
-        if (cancelled || e.name === 'AbortError') return;
-        
-        console.error('Chart data load error:', e);
-        setError('Failed to load chart data');
-        setIsLoading(false);
+      } catch (err) {
+        // Ignore update errors (can happen during chart transitions)
       }
     };
 
-    // Small delay to ensure series is created
-    const timeoutId = setTimeout(loadData, 100);
+    socketService.subscribe('price:update', handlePriceUpdate);
 
     return () => {
-      cancelled = true;
-      controller.abort();
-      clearTimeout(timeoutId);
+      socketService.unsubscribe('price:update', handlePriceUpdate);
     };
-  }, [symbol, timeframe, mode]);
+  }, [symbol, mode]);
 
-  // Update data in real-time (can be called from parent)
-  const updateLastCandle = useCallback((candle) => {
-    if (!mainSeriesRef.current || !isMountedRef.current) return;
-
-    try {
-      if (mode === 'line') {
-        mainSeriesRef.current.update({
-          time: candle.time,
-          value: candle.close,
-        });
-      } else {
-        mainSeriesRef.current.update({
-          time: candle.time,
-          open: candle.open,
-          high: candle.high,
-          low: candle.low,
-          close: candle.close,
-        });
-      }
-
-      if (volumeSeriesRef.current && candle.volume !== undefined) {
-        volumeSeriesRef.current.update({
-          time: candle.time,
-          value: candle.volume,
-          color: candle.close >= candle.open ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)',
-        });
-      }
-    } catch (e) {
-      console.debug('Error updating candle:', e);
+  // Update height when prop changes
+  useEffect(() => {
+    if (chartRef.current) {
+      chartRef.current.applyOptions({ height });
     }
-  }, [mode]);
+  }, [height]);
+
+  if (error) {
+    return (
+      <div
+        className="flex items-center justify-center"
+        style={{ height, background: '#131722', color: '#ef5350' }}
+      >
+        {error}
+      </div>
+    );
+  }
 
   return (
-    <div className="relative w-full" style={{ height }}>
-      {/* Chart Container */}
-      <div ref={containerRef} className="w-full h-full" />
-
-      {/* Loading Overlay */}
-      {isLoading && (
+    <div className="relative" style={{ height }}>
+      {loading && (
         <div
-          className="absolute inset-0 flex items-center justify-center"
+          className="absolute inset-0 flex items-center justify-center z-10"
           style={{ background: 'rgba(19, 23, 34, 0.8)' }}
         >
-          <div className="flex flex-col items-center gap-2">
-            <div className="w-8 h-8 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: '#2962ff' }} />
-            <span className="text-xs" style={{ color: '#787b86' }}>Loading chart...</span>
+          <div className="text-sm" style={{ color: '#787b86' }}>
+            Loading chart...
           </div>
         </div>
       )}
-
-      {/* Error Overlay */}
-      {error && !isLoading && (
-        <div
-          className="absolute inset-0 flex items-center justify-center"
-          style={{ background: 'rgba(19, 23, 34, 0.9)' }}
-        >
-          <div className="text-center">
-            <div className="text-sm mb-2" style={{ color: '#ef5350' }}>{error}</div>
-            <button
-              onClick={() => window.location.reload()}
-              className="px-4 py-2 rounded text-xs"
-              style={{ background: '#2962ff', color: '#fff' }}
-            >
-              Retry
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Symbol & Timeframe Badge */}
-      <div
-        className="absolute top-2 left-2 px-2 py-1 rounded text-xs font-medium"
-        style={{ background: 'rgba(42, 46, 57, 0.9)', color: '#d1d4dc' }}
-      >
-        {symbol} • {timeframe.toUpperCase()}
-      </div>
+      <div ref={chartContainerRef} style={{ width: '100%', height: '100%' }} />
     </div>
   );
-}
+};
+
+export default PriceChart;

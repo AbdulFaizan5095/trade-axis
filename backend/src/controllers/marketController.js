@@ -1,251 +1,151 @@
+// backend/src/controllers/marketController.js
 const { supabase } = require('../config/supabase');
 const marketDataService = require('../services/marketDataService');
+const kiteService = require('../services/kiteService');
 
-// @desc    Get all symbols
-// @route   GET /api/market/symbols
-const getSymbols = async (req, res) => {
+// Get all symbols with powerful search
+exports.getSymbols = async (req, res) => {
   try {
-    const { category, exchange, search } = req.query;
+    const { category, exchange, search, q, limit = 2000 } = req.query;
+    const searchTerm = (search || q || '').trim();
 
     let query = supabase
       .from('symbols')
       .select('*')
       .eq('is_active', true)
-      .order('symbol');
+      .order('underlying', { ascending: true })
+      .order('expiry_date', { ascending: true });
 
-    if (category) {
+    // Filter by category
+    if (category && category !== 'all') {
       query = query.eq('category', category);
     }
 
-    if (exchange) {
+    // Filter by exchange
+    if (exchange && exchange !== 'all') {
       query = query.eq('exchange', exchange);
     }
 
-    if (search) {
-      query = query.or(`symbol.ilike.%${search}%,display_name.ilike.%${search}%`);
+    // Search across symbol, display_name, underlying
+    if (searchTerm) {
+      query = query.or(
+        `symbol.ilike.%${searchTerm}%,display_name.ilike.%${searchTerm}%,underlying.ilike.%${searchTerm}%`
+      );
     }
 
-    const { data, error } = await query;
+    query = query.limit(parseInt(limit));
+
+    const { data: symbols, error } = await query;
 
     if (error) throw error;
 
-    res.status(200).json({
+    res.json({
       success: true,
-      count: data.length,
-      data
+      symbols: symbols || [],
+      count: symbols?.length || 0,
     });
-
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    console.error('getSymbols error:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Get live quote
-// @route   GET /api/market/quote/:symbol
-const getQuote = async (req, res) => {
+// Search symbols endpoint
+exports.searchSymbols = async (req, res) => {
+  try {
+    const { q, category, limit = 100 } = req.query;
+
+    if (!q || !q.trim()) {
+      return res.json({ success: true, symbols: [], count: 0 });
+    }
+
+    const term = q.trim();
+
+    let query = supabase
+      .from('symbols')
+      .select('*')
+      .eq('is_active', true)
+      .or(
+        `symbol.ilike.%${term}%,display_name.ilike.%${term}%,underlying.ilike.%${term}%`
+      )
+      .order('underlying', { ascending: true })
+      .order('expiry_date', { ascending: true })
+      .limit(parseInt(limit));
+
+    if (category && category !== 'all') {
+      query = query.eq('category', category);
+    }
+
+    const { data: symbols, error } = await query;
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      symbols: symbols || [],
+      count: symbols?.length || 0,
+    });
+  } catch (error) {
+    console.error('searchSymbols error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Get single quote
+exports.getQuote = async (req, res) => {
   try {
     const { symbol } = req.params;
-
     const quote = await marketDataService.getQuote(symbol);
 
     if (!quote) {
-      return res.status(404).json({
-        success: false,
-        message: 'Symbol not found'
-      });
+      return res.status(404).json({ success: false, message: 'Symbol not found' });
     }
 
-    res.status(200).json({
-      success: true,
-      data: quote
-    });
-
+    res.json({ success: true, quote });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    console.error('getQuote error:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Get multiple quotes
-// @route   POST /api/market/quotes
-const getQuotes = async (req, res) => {
+// Get multiple quotes
+exports.getQuotes = async (req, res) => {
   try {
     const { symbols } = req.body;
 
-    if (!symbols || !Array.isArray(symbols)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please provide an array of symbols'
-      });
+    if (!Array.isArray(symbols)) {
+      return res.status(400).json({ success: false, message: 'symbols must be an array' });
     }
 
     const quotes = await marketDataService.getQuotes(symbols);
-
-    res.status(200).json({
-      success: true,
-      count: Object.keys(quotes).length,
-      data: quotes
-    });
-
+    res.json({ success: true, quotes });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    console.error('getQuotes error:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Get candle data (OHLC)
-// @route   GET /api/market/candles/:symbol
-const getCandles = async (req, res) => {
+// Get candles for charting
+exports.getCandles = async (req, res) => {
   try {
     const { symbol } = req.params;
-    const { timeframe = '1h', count = 100 } = req.query;
+    const { timeframe = '15m', count = 300 } = req.query;
 
-    // Get symbol info
-    const { data: symbolData, error } = await supabase
-      .from('symbols')
-      .select('*')
-      .eq('symbol', symbol.toUpperCase())
-      .single();
-
-    if (error || !symbolData) {
-      return res.status(404).json({
-        success: false,
-        message: 'Symbol not found'
-      });
-    }
-
-    const candles = marketDataService.generateCandles(
-      symbolData, 
-      timeframe, 
+    const candles = await marketDataService.getCandles(
+      symbol,
+      timeframe,
       parseInt(count)
     );
 
-    res.status(200).json({
+    res.json({
       success: true,
-      symbol: symbol.toUpperCase(),
+      symbol,
       timeframe,
-      count: candles.length,
-      data: candles
+      candles: candles || [],
+      count: candles?.length || 0,
     });
-
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    console.error('getCandles error:', error);
+    res.status(500).json({ success: false, message: error.message });
   }
-};
-
-// @desc    Get market status
-// @route   GET /api/market/status
-const getMarketStatus = async (req, res) => {
-  try {
-    const exchanges = ['NSE', 'BSE', 'MCX', 'CDS'];
-    const status = {};
-
-    for (const exchange of exchanges) {
-      status[exchange] = marketDataService.isMarketOpen(exchange);
-    }
-
-    res.status(200).json({
-      success: true,
-      serverTime: new Date().toISOString(),
-      data: status
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
-
-// @desc    Get top gainers
-// @route   GET /api/market/gainers
-const getTopGainers = async (req, res) => {
-  try {
-    const { category, limit = 10 } = req.query;
-
-    let query = supabase
-      .from('symbols')
-      .select('*')
-      .eq('is_active', true)
-      .gt('change_percent', 0)
-      .order('change_percent', { ascending: false })
-      .limit(parseInt(limit));
-
-    if (category) {
-      query = query.eq('category', category);
-    }
-
-    const { data, error } = await query;
-
-    if (error) throw error;
-
-    res.status(200).json({
-      success: true,
-      count: data.length,
-      data
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
-
-// @desc    Get top losers
-// @route   GET /api/market/losers
-const getTopLosers = async (req, res) => {
-  try {
-    const { category, limit = 10 } = req.query;
-
-    let query = supabase
-      .from('symbols')
-      .select('*')
-      .eq('is_active', true)
-      .lt('change_percent', 0)
-      .order('change_percent', { ascending: true })
-      .limit(parseInt(limit));
-
-    if (category) {
-      query = query.eq('category', category);
-    }
-
-    const { data, error } = await query;
-
-    if (error) throw error;
-
-    res.status(200).json({
-      success: true,
-      count: data.length,
-      data
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-};
-
-module.exports = {
-  getSymbols,
-  getQuote,
-  getQuotes,
-  getCandles,
-  getMarketStatus,
-  getTopGainers,
-  getTopLosers
 };

@@ -1,7 +1,5 @@
 // backend/src/server.js
 const path = require('path');
-
-// IMPORTANT: Load .env first, with an explicit path
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const express = require('express');
@@ -11,12 +9,12 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
+const cron = require('node-cron'); // ✅ NEW
 
-// Imports (after dotenv)
 const { testConnection } = require('./config/supabase');
 
 const authRoutes = require('./routes/auth');
-const adminRoutes = require('./routes/admin'); // ✅ ADD
+const adminRoutes = require('./routes/admin');
 const accountRoutes = require('./routes/accounts');
 const transactionRoutes = require('./routes/transactions');
 const marketRoutes = require('./routes/market');
@@ -25,12 +23,16 @@ const watchlistRoutes = require('./routes/watchlists');
 
 const SocketHandler = require('./websocket/socketHandler');
 
+// ✅ NEW: Kite + Settlement
+const kiteService = require('./services/kiteService');
+const kiteStreamService = require('./services/kiteStreamService');
+const weeklySettlementService = require('./services/weeklySettlementService');
+
 const app = express();
 const server = http.createServer(app);
 
 const isDev = process.env.NODE_ENV === 'development';
 
-// CORS: in dev allow all origins (reflect origin). In prod allow FRONTEND_URL only.
 const corsOptions = {
   origin: (origin, cb) => {
     if (isDev) return cb(null, true);
@@ -41,7 +43,6 @@ const corsOptions = {
   credentials: true,
 };
 
-// Socket.IO setup
 const io = new Server(server, {
   cors: {
     origin: (origin, cb) => {
@@ -56,14 +57,11 @@ const io = new Server(server, {
   transports: ['websocket', 'polling'],
 });
 
-// Initialize WebSocket handler
 const socketHandler = new SocketHandler(io);
 
-// Make io accessible to routes (optional)
 app.set('io', io);
 app.set('socketHandler', socketHandler);
 
-// Middleware
 app.use(helmet());
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
@@ -71,16 +69,14 @@ app.use(compression());
 
 if (isDev) app.use(morgan('dev'));
 
-// Routes
 app.use('/api/auth', authRoutes);
-app.use('/api/admin', adminRoutes); // ✅ ADD
+app.use('/api/admin', adminRoutes);
 app.use('/api/accounts', accountRoutes);
 app.use('/api/transactions', transactionRoutes);
 app.use('/api/market', marketRoutes);
 app.use('/api/trading', tradingRoutes);
 app.use('/api/watchlists', watchlistRoutes);
 
-// Health check
 app.get('/health', async (req, res) => {
   const dbConnected = await testConnection();
   res.json({
@@ -89,18 +85,18 @@ app.get('/health', async (req, res) => {
     database: dbConnected ? 'connected' : 'disconnected',
     websocket: 'active',
     connectedClients: io.engine.clientsCount,
+    kite: kiteStreamService.status(),
     timestamp: new Date().toISOString(),
   });
 });
 
-// API info
 app.get('/api', (req, res) => {
   res.json({
     success: true,
     message: 'Trade Axis API v1.0',
     endpoints: {
       auth: '/api/auth',
-      admin: '/api/admin', // ✅ ADD
+      admin: '/api/admin',
       accounts: '/api/accounts',
       transactions: '/api/transactions',
       market: '/api/market',
@@ -110,18 +106,15 @@ app.get('/api', (req, res) => {
   });
 });
 
-// 404
 app.use('*', (req, res) => {
   res.status(404).json({ success: false, message: 'Route not found' });
 });
 
-// Error handler
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(500).json({ success: false, message: 'Server error' });
 });
 
-// Start
 const PORT = process.env.PORT || 5000;
 
 const startServer = async () => {
@@ -131,7 +124,7 @@ const startServer = async () => {
     process.exit(1);
   }
 
-  server.listen(PORT, () => {
+  server.listen(PORT, async () => {
     console.log('');
     console.log('🚀 ══════════════════════════════════════════════════════════');
     console.log('   TRADE AXIS SERVER (HTTP + WebSocket)');
@@ -141,13 +134,46 @@ const startServer = async () => {
     console.log(`   🌍 ENV: ${process.env.NODE_ENV}`);
     console.log('══════════════════════════════════════════════════════════════');
     console.log('');
+
+    // ✅ Weekly settlement cron (Saturday 01:00 IST)
+    const cronExpr = process.env.SETTLEMENT_CRON || '0 1 * * 6';
+    const tz = process.env.SETTLEMENT_TIMEZONE || 'Asia/Kolkata';
+
+    cron.schedule(cronExpr, async () => {
+      console.log('⏰ Running scheduled weekly settlement...');
+      await weeklySettlementService.runSettlement();
+    }, { timezone: tz });
+
+    console.log(`⏰ Weekly settlement scheduled: "${cronExpr}" (${tz})`);
+
+    // ✅ Kite auto-start (if token exists in DB)
+    if (String(process.env.KITE_AUTO_START || 'true') === 'true') {
+      try {
+        await kiteService.init();
+        if (kiteService.isSessionReady()) {
+          const result = await kiteStreamService.start(io);
+          console.log('✅ Kite stream auto-start result:', result);
+        } else {
+          console.log('ℹ️ Kite session not ready. Admin must create session daily.');
+        }
+      } catch (e) {
+        console.log('ℹ️ Kite stream not started:', e.message);
+      }
+    }
   });
 };
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down gracefully');
   socketHandler.stop?.();
+  try { await kiteStreamService.stop(); } catch {}
+  server.close(() => process.exit(0));
+});
+
+process.on('SIGINT', async () => {
+  console.log('SIGINT received, shutting down gracefully');
+  socketHandler.stop?.();
+  try { await kiteStreamService.stop(); } catch {}
   server.close(() => process.exit(0));
 });
 
