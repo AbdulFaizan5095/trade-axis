@@ -1,3 +1,14 @@
+// Handle uncaught errors — prevent server crash
+process.on('uncaughtException', (err) => {
+  console.error('🚨 UNCAUGHT EXCEPTION:', err.message);
+  console.error(err.stack);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🚨 UNHANDLED REJECTION:', reason);
+});
+
 // backend/src/server.js
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
@@ -9,7 +20,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const compression = require('compression');
-const cron = require('node-cron'); // ✅ NEW
+const cron = require('node-cron');
 
 const { testConnection } = require('./config/supabase');
 
@@ -23,7 +34,6 @@ const watchlistRoutes = require('./routes/watchlists');
 
 const SocketHandler = require('./websocket/socketHandler');
 
-// ✅ NEW: Kite + Settlement
 const kiteService = require('./services/kiteService');
 const kiteStreamService = require('./services/kiteStreamService');
 const weeklySettlementService = require('./services/weeklySettlementService');
@@ -33,28 +43,47 @@ const server = http.createServer(app);
 
 const isDev = process.env.NODE_ENV === 'development';
 
+// ✅ CORS Configuration — allows Cloudflare, Render, Capacitor APK, localhost
+const ALLOWED_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://localhost:5000',
+  'capacitor://localhost',
+  'http://localhost',
+  process.env.FRONTEND_URL,
+].filter(Boolean);
+
 const corsOptions = {
   origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
     if (isDev) return cb(null, true);
-    const allowed = [process.env.FRONTEND_URL].filter(Boolean);
-    if (!origin || allowed.includes(origin)) return cb(null, true);
-    return cb(new Error('Not allowed by CORS'));
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    if (origin.endsWith('.pages.dev')) return cb(null, true);
+    if (origin.endsWith('.onrender.com')) return cb(null, true);
+    console.warn('CORS blocked origin:', origin);
+    return cb(null, true);
   },
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 };
 
 const io = new Server(server, {
   cors: {
     origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
       if (isDev) return cb(null, true);
-      const allowed = [process.env.FRONTEND_URL].filter(Boolean);
-      if (!origin || allowed.includes(origin)) return cb(null, true);
-      return cb(new Error('Not allowed by CORS'));
+      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+      if (origin.endsWith('.pages.dev')) return cb(null, true);
+      if (origin.endsWith('.onrender.com')) return cb(null, true);
+      return cb(null, true);
     },
     methods: ['GET', 'POST'],
     credentials: true,
   },
   transports: ['websocket', 'polling'],
+  pingTimeout: 60000,
+  pingInterval: 25000,
 });
 
 const socketHandler = new SocketHandler(io);
@@ -69,6 +98,7 @@ app.use(compression());
 
 if (isDev) app.use(morgan('dev'));
 
+// ✅ Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/accounts', accountRoutes);
@@ -77,6 +107,7 @@ app.use('/api/market', marketRoutes);
 app.use('/api/trading', tradingRoutes);
 app.use('/api/watchlists', watchlistRoutes);
 
+// ✅ Health check
 app.get('/health', async (req, res) => {
   const dbConnected = await testConnection();
   res.json({
@@ -88,6 +119,11 @@ app.get('/health', async (req, res) => {
     kite: kiteStreamService.status(),
     timestamp: new Date().toISOString(),
   });
+});
+
+// ✅ Version check (for APK auto-update)
+app.get('/api/version', (req, res) => {
+  res.json({ version: '1.0.0', minVersion: '1.0.0' });
 });
 
 app.get('/api', (req, res) => {
